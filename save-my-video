@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 
 set -u
+
+# Fuerza el separador decimal a punto en el formateo numérico
+# (printf, awk), sin importar el locale del sistema del usuario.
 export LC_NUMERIC=C
 
 # ============================================================
-# Save My Video — Checkpoint 4
+# Save My Video
+# Checkpoint 3
 #
-# Requiere: yt-dlp, ffmpeg
-# Ejecutable: ~/.local/bin/save-my-video
-# Config:     ~/.config/save-my-video/config
+# Requiere:
+#   - yt-dlp
+#   - ffmpeg
+#
+# Ejecutable:
+#   ~/.local/bin/save-my-video
+#
+# Configuración:
+#   ~/.config/save-my-video/config
 # ============================================================
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/save-my-video"
@@ -20,97 +30,59 @@ BAR_WIDTH=32
 # Colores
 # ============================================================
 
-RESET='\033[0m'  BOLD='\033[1m'  DIM='\033[2m'
-RED='\033[38;5;203m'    GREEN='\033[38;5;82m'   YELLOW='\033[38;5;220m'
-BLUE='\033[38;5;75m'    CYAN='\033[38;5;51m'    MAGENTA='\033[38;5;213m'
-WHITE='\033[38;5;255m'  GRAY='\033[38;5;245m'
+RESET='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+
+RED='\033[38;5;203m'
+GREEN='\033[38;5;82m'
+YELLOW='\033[38;5;220m'
+BLUE='\033[38;5;75m'
+CYAN='\033[38;5;51m'
+MAGENTA='\033[38;5;213m'
+WHITE='\033[38;5;255m'
+GRAY='\033[38;5;245m'
 
 # ============================================================
 # Variables
 # ============================================================
 
-URL=""  VIDEO_TITLE=""  HAS_4K=0
-VIDEO_HEIGHT=1080  AUDIO_SELECTOR="bestaudio"  DOWNLOAD_DIR=""
+URL=""
+VIDEO_TITLE=""
 
-IS_PLAYLIST=0  PLAYLIST_TITLE=""  PLAYLIST_COUNT=0  PLAYLIST_MODE="single"
+HAS_4K=0
 
-DEFAULT_VIDEO_HEIGHT=1080  DEFAULT_AUDIO="best"
-DOWNLOADS_DIR=""  VIDEOS_DIR=""
+VIDEO_HEIGHT=1080
+AUDIO_SELECTOR="bestaudio"
 
-# Progreso en escala ×10 (724 = 72.4%)
-VP10=0  AP10=0  TP10=0
-DOWNLOAD_SPEED="--"  DOWNLOAD_ETA="--"
-CURRENT_VIDEO_INDEX=""  CURRENT_VIDEO_TITLE=""
-PROGRESS_DRAWN=0  yt_pid=""
+DOWNLOAD_DIR=""
 
-declare -a PL_INDEX PL_TITLE PL_STATUS
-
-# ============================================================
-# Limpieza global
-# ============================================================
-
-cleanup() {
-    [[ -n "$yt_pid" ]] && kill "$yt_pid" 2>/dev/null
-    if [[ -t 1 ]]; then
-        tput cnorm 2>/dev/null
-    fi
-}
-trap cleanup EXIT INT TERM
+# Playlist
+IS_PLAYLIST=0
+PLAYLIST_TITLE=""
+PLAYLIST_COUNT=0
+PLAYLIST_INDEX=""
+PLAYLIST_VIDEO_TITLE=""
+PLAYLIST_MODE="single"
 
 # ============================================================
 # Utilidades
 # ============================================================
 
-msg()     { printf "${CYAN}${RESET}\n" "$*"; }
-success() { printf "${GREEN}${RESET}\n" "$*"; }
-warning() { printf "${YELLOW}${RESET}\n" "$*"; }
-error()   { printf "${RED}${RESET}\n" "$*" >&2; }
-
-# Menú genérico. $2 es un patrón de case: "1-4", "1-2", etc.
-ask_option() {
-    local c
-    while :; do
-        read -r -p "$1 [$2]: " c
-        case "$c" in
-            $2) echo "$c"; return ;;
-            *)    warning "Opción no válida." ;;
-        esac
-    done
+msg() {
+    printf "${CYAN}%s${RESET}\n" "$*"
 }
 
-# Sí/No. Devuelve 0 si sí.
-ask_yesno() {
-    local a
-    read -r -p "$1 [S/n]: " a
-    case "${a,,}" in
-        ""|s|si|sí) return 0 ;;
-        *)          return 1 ;;
-    esac
+success() {
+    printf "${GREEN}%s${RESET}\n" "$*"
 }
 
-# Porcentaje entero ×10
-pct10() {
-    if (( $2 > 0 )); then
-        printf '%d' "$(( $1 * 1000 / $2 ))"
-    else
-        printf 0
-    fi
+warning() {
+    printf "${YELLOW}%s${RESET}\n" "$*"
 }
 
-trim() {
-    local s="$1"
-    s="${s#"${s%%[![:space:]]*}"}"
-    s="${s%"${s##*[![:space:]]}"}"
-    printf '%s' "$s"
-}
-
-truncate_text() {
-    local text="$1" max="$2"
-    if (( ${#text} <= max )); then
-        printf '%s' "$text"
-    else
-        printf '%s…' "${text:0:max-1}"
-    fi
+error() {
+    printf "${RED}%s${RESET}\n" "$*" >&2
 }
 
 # ============================================================
@@ -118,15 +90,27 @@ truncate_text() {
 # ============================================================
 
 check_dependencies() {
-    local missing=0 dep
-    for dep in yt-dlp ffmpeg; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            error "ERROR: $dep no está instalado."
-            echo "En Arch Linux:  sudo pacman -S $dep"
-            echo
-            missing=1
-        fi
-    done
+
+    local missing=0
+
+    if ! command -v yt-dlp >/dev/null 2>&1; then
+        error "ERROR: yt-dlp no está instalado."
+        echo
+        echo "En Arch Linux:"
+        echo "  sudo pacman -S yt-dlp"
+        echo
+        missing=1
+    fi
+
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        error "ERROR: ffmpeg no está instalado."
+        echo
+        echo "En Arch Linux:"
+        echo "  sudo pacman -S ffmpeg"
+        echo
+        missing=1
+    fi
+
     if (( missing )); then
         exit 1
     fi
@@ -137,24 +121,38 @@ check_dependencies() {
 # ============================================================
 
 get_xdg_directories() {
-    DOWNLOADS_DIR=""  VIDEOS_DIR=""
+
+    DOWNLOADS_DIR=""
+    VIDEOS_DIR=""
+
     if command -v xdg-user-dir >/dev/null 2>&1; then
+
         DOWNLOADS_DIR="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
         VIDEOS_DIR="$(xdg-user-dir VIDEOS 2>/dev/null || true)"
+
         [[ -d "$DOWNLOADS_DIR" ]] || DOWNLOADS_DIR=""
-        [[ -d "$VIDEOS_DIR" ]]   || VIDEOS_DIR=""
+        [[ -d "$VIDEOS_DIR" ]] || VIDEOS_DIR=""
     fi
 }
 
+# ============================================================
+# Normalizar ruta
+# ============================================================
+
 normalize_path() {
+
     local path="$1"
+
     if [[ "$path" == "~" ]]; then
         path="$HOME"
+
     elif [[ "$path" == "~/"* ]]; then
         path="$HOME/${path#~/}"
+
     elif [[ "$path" != /* ]]; then
         path="$HOME/$path"
     fi
+
     printf '%s\n' "$path"
 }
 
@@ -170,57 +168,70 @@ select_download_directory() {
     echo -e "${BOLD}Carpeta de descarga${RESET}"
     echo
 
-    local options=() labels=() dirs=() option=1
-    local choice idx i custom_path
+    local option=1
+    local downloads_option=""
+    local videos_option=""
 
     if [[ -n "$DOWNLOADS_DIR" ]]; then
-        options+=("$option"); labels+=("Descargas"); dirs+=("$DOWNLOADS_DIR")
-        echo -e "  ${CYAN}$option)${RESET} Descargas"
-        echo -e "     ${DIM}$DOWNLOADS_DIR${RESET}"
+
+        downloads_option="$option"
+
+        echo -e "  ${CYAN}${option})${RESET} Descargas"
+        echo -e "     ${DIM}${DOWNLOADS_DIR}${RESET}"
+
         ((option++))
     fi
 
     if [[ -n "$VIDEOS_DIR" ]]; then
-        options+=("$option"); labels+=("Vídeos"); dirs+=("$VIDEOS_DIR")
-        echo -e "  ${MAGENTA}$option)${RESET} Vídeos"
-        echo -e "     ${DIM}$VIDEOS_DIR${RESET}"
+
+        videos_option="$option"
+
+        echo -e "  ${MAGENTA}${option})${RESET} Vídeos"
+        echo -e "     ${DIM}${VIDEOS_DIR}${RESET}"
+
         ((option++))
     fi
 
     local custom_option="$option"
-    options+=("$custom_option"); labels+=("Personalizada"); dirs+=("")
-    echo -e "  ${YELLOW}$custom_option)${RESET} Personalizada"
+
+    echo -e "  ${YELLOW}${custom_option})${RESET} Personalizada"
     echo
 
-    while :; do
+    while true; do
 
-        idx=""
         read -r -p "Selecciona [1-$custom_option]: " choice
 
-        for ((i = 0; i < ${#options[@]}; i++)); do
-            if [[ "$choice" == "${options[$i]}" ]]; then
-                idx="$i"
-                break
-            fi
-        done
+        if [[ -n "$downloads_option" &&
+              "$choice" == "$downloads_option" ]]; then
 
-        if [[ -z "$idx" ]]; then
-            warning "Opción no válida."
-            continue
-        fi
+            DOWNLOAD_DIR="$DOWNLOADS_DIR"
+            break
 
-        if [[ "${labels[$idx]}" == "Personalizada" ]]; then
+        elif [[ -n "$videos_option" &&
+                "$choice" == "$videos_option" ]]; then
+
+            DOWNLOAD_DIR="$VIDEOS_DIR"
+            break
+
+        elif [[ "$choice" == "$custom_option" ]]; then
+
             echo
+
             read -r -p "Ruta personalizada: " custom_path
+
             if [[ -z "$custom_path" ]]; then
                 warning "La ruta no puede estar vacía."
                 continue
             fi
+
             DOWNLOAD_DIR="$(normalize_path "$custom_path")"
+            break
+
         else
-            DOWNLOAD_DIR="${dirs[$idx]}"
+
+            warning "Opción no válida."
         fi
-        break
+
     done
 
     if [[ ! -d "$DOWNLOAD_DIR" ]]; then
@@ -230,40 +241,43 @@ select_download_directory() {
         echo "  $DOWNLOAD_DIR"
         echo
 
-        if ask_yesno "¿Crear la carpeta?"; then
-            if ! mkdir -p "$DOWNLOAD_DIR"; then
-                error "No se pudo crear la carpeta."
+        read -r -p "¿Crear la carpeta? [S/n]: " answer
+
+        case "${answer,,}" in
+
+            ""|s|si|sí)
+
+                if ! mkdir -p "$DOWNLOAD_DIR"; then
+                    error "No se pudo crear la carpeta."
+                    return 1
+                fi
+
+                success "Carpeta creada."
+                ;;
+
+            n|no)
+
+                warning "No se creará la carpeta."
                 return 1
-            fi
-            success "Carpeta creada."
-        else
-            warning "No se creará la carpeta."
-            return 1
-        fi
+                ;;
+
+            *)
+
+                warning "Respuesta no válida."
+                return 1
+                ;;
+
+        esac
     fi
-
-    return 0
 }
 
 # ============================================================
-# Configuración
+# Configuración inicial
 # ============================================================
-
-save_config() {
-    mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_FILE" <<EOF
-DEFAULT_VIDEO_HEIGHT=$DEFAULT_VIDEO_HEIGHT
-DEFAULT_AUDIO="$DEFAULT_AUDIO"
-DOWNLOAD_DIR="$DOWNLOAD_DIR"
-EOF
-    chmod 600 "$CONFIG_FILE"
-    echo
-    success "Configuración guardada:"
-    echo "  $CONFIG_FILE"
-    echo
-}
 
 create_default_config() {
+
+    mkdir -p "$CONFIG_DIR"
 
     echo
     echo -e "${BOLD}${CYAN}╔════════════════════════════════════════╗${RESET}"
@@ -279,12 +293,32 @@ create_default_config() {
     echo "  4) 720p"
     echo
 
-    case "$(ask_option "Selecciona" "1-4")" in
-        1) DEFAULT_VIDEO_HEIGHT=2160 ;;
-        2) DEFAULT_VIDEO_HEIGHT=1440 ;;
-        3) DEFAULT_VIDEO_HEIGHT=1080 ;;
-        4) DEFAULT_VIDEO_HEIGHT=720  ;;
-    esac
+    while true; do
+
+        read -r -p "Selecciona [1-4]: " choice
+
+        case "$choice" in
+            1)
+                DEFAULT_VIDEO_HEIGHT=2160
+                break
+                ;;
+            2)
+                DEFAULT_VIDEO_HEIGHT=1440
+                break
+                ;;
+            3)
+                DEFAULT_VIDEO_HEIGHT=1080
+                break
+                ;;
+            4)
+                DEFAULT_VIDEO_HEIGHT=720
+                break
+                ;;
+            *)
+                warning "Opción no válida."
+                ;;
+        esac
+    done
 
     echo
     echo -e "${BOLD}Calidad de audio predeterminada${RESET}"
@@ -295,12 +329,32 @@ create_default_config() {
     echo "  4) Hasta 192 kbps"
     echo
 
-    case "$(ask_option "Selecciona" "1-4")" in
-        1) DEFAULT_AUDIO="best" ;;
-        2) DEFAULT_AUDIO="320"  ;;
-        3) DEFAULT_AUDIO="256"  ;;
-        4) DEFAULT_AUDIO="192"  ;;
-    esac
+    while true; do
+
+        read -r -p "Selecciona [1-4]: " choice
+
+        case "$choice" in
+            1)
+                DEFAULT_AUDIO="best"
+                break
+                ;;
+            2)
+                DEFAULT_AUDIO="320"
+                break
+                ;;
+            3)
+                DEFAULT_AUDIO="256"
+                break
+                ;;
+            4)
+                DEFAULT_AUDIO="192"
+                break
+                ;;
+            *)
+                warning "Opción no válida."
+                ;;
+        esac
+    done
 
     while ! select_download_directory; do
         echo
@@ -308,10 +362,24 @@ create_default_config() {
         echo
     done
 
-    save_config
+    cat > "$CONFIG_FILE" <<EOF
+DEFAULT_VIDEO_HEIGHT=$DEFAULT_VIDEO_HEIGHT
+DEFAULT_AUDIO="$DEFAULT_AUDIO"
+DOWNLOAD_DIR="$DOWNLOAD_DIR"
+EOF
+
+    chmod 600 "$CONFIG_FILE"
+
+    echo
+    success "Configuración guardada:"
+    echo "  $CONFIG_FILE"
+    echo
 }
 
-# Parseo con lista blanca: nunca se ejecuta código del config.
+# ============================================================
+# Cargar configuración
+# ============================================================
+
 load_config() {
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -320,14 +388,8 @@ load_config() {
 
     else
 
-        local key value
-        while IFS='=' read -r key value; do
-            case "$key" in
-                DEFAULT_VIDEO_HEIGHT) DEFAULT_VIDEO_HEIGHT="$value" ;;
-                DEFAULT_AUDIO)        DEFAULT_AUDIO="${value//\"/}" ;;
-                DOWNLOAD_DIR)         DOWNLOAD_DIR="${value//\"/}" ;;
-            esac
-        done < <(grep -E '^[A-Z_]+=' "$CONFIG_FILE")
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
 
         DEFAULT_VIDEO_HEIGHT="${DEFAULT_VIDEO_HEIGHT:-1080}"
         DEFAULT_AUDIO="${DEFAULT_AUDIO:-best}"
@@ -345,25 +407,32 @@ load_config() {
                 echo
             done
 
-            save_config
+            cat > "$CONFIG_FILE" <<EOF
+DEFAULT_VIDEO_HEIGHT=$DEFAULT_VIDEO_HEIGHT
+DEFAULT_AUDIO="$DEFAULT_AUDIO"
+DOWNLOAD_DIR="$DOWNLOAD_DIR"
+EOF
+
+            chmod 600 "$CONFIG_FILE"
         fi
     fi
 
     mkdir -p "$DOWNLOAD_DIR"
 }
+
 # ============================================================
-# URL
+# Solicitar URL
 # ============================================================
 
 ask_url() {
 
     echo
     echo -e "${BOLD}${CYAN}╔════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${CYAN}║          Save My Video                 ║${RESET}"
+    echo -e "${BOLD}${CYAN}║          Save My Video                ║${RESET}"
     echo -e "${BOLD}${CYAN}╚════════════════════════════════════════╝${RESET}"
     echo
 
-    while :; do
+    while true; do
 
         read -r -p "Link de descarga: " URL
 
@@ -382,38 +451,44 @@ ask_url() {
 }
 
 # ============================================================
-# Info + detección de 4K en UNA consulta
+# Obtener información
 # ============================================================
 
 get_video_info() {
 
-    local out
+    local title_file
+    local error_file
+
+    title_file="$(mktemp)"
+    error_file="$(mktemp)"
 
     echo
     msg "Verificando enlace..."
     echo
 
-    if ! out="$(yt-dlp --no-warnings --skip-download --no-playlist \
-            --print '%(title)s\t%(format)s' "$URL" 2>/dev/null)"; then
+    if ! yt-dlp \
+        --no-warnings \
+        --skip-download \
+        --no-playlist \
+        --print "%(title)s" \
+        "$URL" >"$title_file" 2>"$error_file"; then
+
         error "No se pudo verificar el enlace."
+        echo
+
+        cat "$error_file"
+
+        rm -f "$title_file" "$error_file"
+
         return 1
     fi
 
-    VIDEO_TITLE="${out%%$'\t'*}"
+    VIDEO_TITLE="$(head -n 1 "$title_file")"
 
-    HAS_4K=0
-    if [[ "$out" == *2160* ]]; then
-        HAS_4K=1
-    fi
+    rm -f "$title_file" "$error_file"
 
     success "Vídeo encontrado:"
     echo "  $VIDEO_TITLE"
-
-    if (( HAS_4K )); then
-        success "✓ 4K (2160p) disponible."
-    else
-        warning "4K no disponible."
-    fi
 
     return 0
 }
@@ -427,57 +502,167 @@ detect_playlist() {
     IS_PLAYLIST=0
     PLAYLIST_TITLE=""
     PLAYLIST_COUNT=0
+    PLAYLIST_INDEX=""
+    PLAYLIST_VIDEO_TITLE=""
 
-    local out playlist_title playlist_count
+    local playlist_file
+    local playlist_error
 
-    out="$(yt-dlp --flat-playlist --no-warnings --skip-download \
-        --print '%(playlist_title)s\t%(playlist_count)s' \
-        "$URL" 2>/dev/null)" || return 0
+    playlist_file="$(mktemp)"
+    playlist_error="$(mktemp)"
 
-    playlist_title="$(head -n 1 <<<"$out" | cut -f1)"
-    playlist_count="$(head -n 1 <<<"$out" | cut -f2)"
+    if ! yt-dlp \
+        --flat-playlist \
+        --no-warnings \
+        --skip-download \
+        --print "%(playlist_title)s"$'\t'"%(playlist_count)s"$'\t'"%(playlist_index)s"$'\t'"%(id)s"$'\t'"%(title)s" \
+        "$URL" >"$playlist_file" 2>"$playlist_error"; then
 
-    if [[ -n "$playlist_title" &&
-          "$playlist_title" != "NA" &&
-          "$playlist_title" != "None" ]]; then
-
-        IS_PLAYLIST=1
-        PLAYLIST_TITLE="$playlist_title"
-
-        if [[ "$playlist_count" =~ ^[0-9]+$ ]]; then
-            PLAYLIST_COUNT="$playlist_count"
-        fi
+        rm -f "$playlist_file" "$playlist_error"
+        return 0
     fi
+
+    local playlist_title
+    local playlist_count
+    local playlist_index
+    local video_id
+    local video_title
+
+    while IFS=$'\t' read -r \
+        playlist_title \
+        playlist_count \
+        playlist_index \
+        video_id \
+        video_title; do
+
+        [[ -n "$playlist_title" ]] || continue
+
+        if [[ "$playlist_title" != "NA" &&
+              "$playlist_title" != "None" ]]; then
+
+            IS_PLAYLIST=1
+
+            if [[ -z "$PLAYLIST_TITLE" ]]; then
+                PLAYLIST_TITLE="$playlist_title"
+            fi
+
+            if [[ "$playlist_count" =~ ^[0-9]+$ ]]; then
+                PLAYLIST_COUNT="$playlist_count"
+            fi
+
+            if [[ "$video_title" == "$VIDEO_TITLE" ]]; then
+                PLAYLIST_INDEX="$playlist_index"
+                PLAYLIST_VIDEO_TITLE="$video_title"
+
+            elif [[ -n "$video_id" &&
+                    "$URL" == *"$video_id"* ]]; then
+
+                PLAYLIST_INDEX="$playlist_index"
+                PLAYLIST_VIDEO_TITLE="$video_title"
+            fi
+        fi
+
+    done <"$playlist_file"
+
+    rm -f "$playlist_file" "$playlist_error"
 
     return 0
 }
 
 # ============================================================
-# Selección single/playlist
+# Caja de playlist
 # ============================================================
+
+# El contenido visual se limita a 52 columnas.
+# El marco exterior tiene 56 columnas.
+#
+# Se conservan los emojis. El padding se calcula de forma
+# explícita para evitar que los textos dinámicos deformen
+# el borde derecho.
+
+playlist_box_line() {
+
+    local text="$1"
+    local width=56
+
+    # El contenido entre │ ... │ tiene 54 columnas.
+    # En terminales normales los emojis utilizados aquí
+    # ocupan dos columnas visuales.
+    #
+    # Para evitar depender de wcwidth, mantenemos los textos
+    # dinámicos cortos y añadimos padding fijo.
+
+    printf "│  %-52s│\n" "$text"
+}
+
+# Variante con el texto pegado a la izquierda y otro dato
+# (p. ej. la calidad seleccionada) pegado a la derecha, dentro
+# de las mismas 52 columnas de contenido.
+
+playlist_box_line_split() {
+
+    local left="$1"
+    local right="$2"
+
+    printf "│  %-40s%12s│\n" "$left" "$right"
+}
+
+# ============================================================
+# Etiqueta de calidad
+#
+# Muestra la resolución seleccionada, marcando explícitamente
+# cuando corresponde a 4K.
+# ============================================================
+
+format_quality_label() {
+
+    if (( VIDEO_HEIGHT >= 2160 )); then
+        printf '%dp (4K)' "$VIDEO_HEIGHT"
+    else
+        printf '%dp' "$VIDEO_HEIGHT"
+    fi
+}
 
 show_playlist_selection() {
 
     PLAYLIST_MODE="single"
-    (( IS_PLAYLIST )) || return 0
+
+    if (( ! IS_PLAYLIST )); then
+        return 0
+    fi
 
     echo
 
-    # Caja en buffer: una sola impresión.
-    local box=()
-    box+=("$(printf "${CYAN}┌────────────────────────────────────────────────────────┐${RESET}")")
-    box+=("$(printf "│  %-52s│" "📋 ${PLAYLIST_TITLE:0:48}")")
-    box+=("$(printf "│  %-52s│" "")")
+    printf "${CYAN}┌────────────────────────────────────────────────────────┐${RESET}\n"
+
+    playlist_box_line "📋 ${PLAYLIST_TITLE:0:48}"
+
+    playlist_box_line ""
 
     if (( PLAYLIST_COUNT > 0 )); then
-        box+=("$(printf "│  %-52s│" "$PLAYLIST_COUNT vídeos")")
-    else
-        box+=("$(printf "│  %-52s│" "Cantidad de vídeos no disponible")")
+        playlist_box_line "8 vídeos"
+        # La línea anterior se reemplaza abajo cuando conocemos
+        # el número real.
     fi
 
-    box+=("$(printf "${CYAN}└────────────────────────────────────────────────────────┘${RESET}")")
+    # Redibujar la caja correctamente con contenido preparado.
+    # Se vuelve a imprimir el bloque completo para evitar que
+    # las longitudes dinámicas afecten el marco.
 
-    printf '%s\n' "${box[@]}"
+    printf '\033[1A'
+    printf '\033[2K\r'
+
+    if (( PLAYLIST_COUNT > 0 )); then
+        printf "│  %-52s│\n" "📋 ${PLAYLIST_TITLE:0:48}"
+        printf "│  %-52s│\n" ""
+        printf "│  %-52s│\n" "$PLAYLIST_COUNT vídeos"
+    else
+        printf "│  %-52s│\n" "📋 ${PLAYLIST_TITLE:0:48}"
+        printf "│  %-52s│\n" ""
+        printf "│  %-52s│\n" "Cantidad de vídeos no disponible"
+    fi
+
+    printf "${CYAN}└────────────────────────────────────────────────────────┘${RESET}\n"
 
     echo
     echo "  1) 🎬 Descargar solo este vídeo"
@@ -487,55 +672,70 @@ show_playlist_selection() {
     else
         echo "  2) 📋 Descargar toda la lista"
     fi
+
     echo
 
-    local choice
-    while :; do
+    while true; do
 
-        read -r -p "Selecciona [1-2]: " choice
+        read -r -p "Selecciona [1]: " choice
 
         case "$choice" in
-            ""|1) PLAYLIST_MODE="single";   break ;;
-            2)    PLAYLIST_MODE="playlist"; break ;;
-            *)    warning "Opción no válida. Selecciona 1 o 2." ;;
+
+            ""|1)
+                PLAYLIST_MODE="single"
+                break
+                ;;
+
+            2)
+                PLAYLIST_MODE="playlist"
+                break
+                ;;
+
+            *)
+                warning "Opción no válida. Selecciona 1 o 2."
+                ;;
+
         esac
     done
 
     echo
 }
 
-load_playlist_entries() {
+# ============================================================
+# 4K
+# ============================================================
 
-    PL_INDEX=()  PL_TITLE=()  PL_STATUS=()
+detect_4k() {
 
-    local playlist_file idx title
-    playlist_file="$(mktemp)"
+    msg "Comprobando disponibilidad de 4K..."
 
-    yt-dlp --flat-playlist --no-warnings --skip-download \
-        --print '%(playlist_index)s\t%(title)s' \
-        "$URL" >"$playlist_file" 2>/dev/null || true
+    local formats
 
-    while IFS=$'\t' read -r idx title; do
+    formats="$(
+        yt-dlp \
+            --no-warnings \
+            --skip-download \
+            --no-playlist \
+            --list-formats \
+            "$URL" 2>/dev/null || true
+    )"
 
-        [[ -n "$idx" ]] || continue
+    if echo "$formats" |
+        grep -Eq '(^|[[:space:]])2160([pP]|[[:space:]])|2160p'; then
 
-        PL_INDEX+=("$idx")  PL_TITLE+=("$title")  PL_STATUS+=("pending")
+        HAS_4K=1
+        success "✓ 4K (2160p) disponible."
 
-    done <"$playlist_file"
+    else
 
-    rm -f "$playlist_file"
+        HAS_4K=0
+        warning "4K no disponible."
 
-    # Fallback si yt-dlp no devolvió la lista.
-    if (( ${#PL_INDEX[@]} == 0 )) && (( PLAYLIST_COUNT > 0 )); then
-        local i
-        for ((i = 1; i <= PLAYLIST_COUNT; i++)); do
-            PL_INDEX+=("$i")  PL_TITLE+=("Vídeo $i")  PL_STATUS+=("pending")
-        done
     fi
 }
 
 # ============================================================
-# Calidad
+# Selección de calidad
 # ============================================================
 
 select_quality() {
@@ -543,10 +743,27 @@ select_quality() {
     VIDEO_HEIGHT="$DEFAULT_VIDEO_HEIGHT"
 
     case "$DEFAULT_AUDIO" in
-        320) AUDIO_SELECTOR="bestaudio[abr<=320]/bestaudio" ;;
-        256) AUDIO_SELECTOR="bestaudio[abr<=256]/bestaudio" ;;
-        192) AUDIO_SELECTOR="bestaudio[abr<=192]/bestaudio" ;;
-        *)   AUDIO_SELECTOR="bestaudio" ;;
+
+        best)
+            AUDIO_SELECTOR="bestaudio"
+            ;;
+
+        320)
+            AUDIO_SELECTOR="bestaudio[abr<=320]/bestaudio"
+            ;;
+
+        256)
+            AUDIO_SELECTOR="bestaudio[abr<=256]/bestaudio"
+            ;;
+
+        192)
+            AUDIO_SELECTOR="bestaudio[abr<=192]/bestaudio"
+            ;;
+
+        *)
+            AUDIO_SELECTOR="bestaudio"
+            ;;
+
     esac
 
     if (( HAS_4K )); then
@@ -560,71 +777,234 @@ select_quality() {
         echo "  N) No, 1080p"
         echo
 
-        if ask_yesno "Selecciona"; then
-            VIDEO_HEIGHT=2160
-        else
-            VIDEO_HEIGHT=1080
-        fi
+        while true; do
+
+            read -r -p "Selecciona [S/n]: " answer
+
+            case "${answer,,}" in
+
+                ""|s|si|sí)
+                    VIDEO_HEIGHT=2160
+                    break
+                    ;;
+
+                n|no)
+                    VIDEO_HEIGHT=1080
+                    break
+                    ;;
+
+                *)
+                    warning "Responde S o N."
+                    ;;
+
+            esac
+
+        done
 
     elif (( VIDEO_HEIGHT > 1080 )); then
+
         VIDEO_HEIGHT=1080
     fi
 }
 
 # ============================================================
-# Barra (sin subshells: escribe a variable con printf -v)
+# Estado de progreso
 # ============================================================
 
-make_bar() {  # $1=x10  $2=color  $3=var_salida
+PROGRESS_DRAWN=0
 
-    local x10=$1 filled=$(( (x10 * BAR_WIDTH + 500) / 1000 )) bar pad
+VIDEO_PERCENT="0.0"
+AUDIO_PERCENT="0.0"
+TOTAL_PERCENT="0.0"
+
+DOWNLOAD_SPEED="--"
+DOWNLOAD_ETA="--"
+
+CURRENT_VIDEO_INDEX=""
+CURRENT_VIDEO_TITLE=""
+
+# ============================================================
+# Porcentaje (aritmética entera en bash, sin awk)
+#
+# Los valores se manejan en escala x10 (ej: 724 = 72.4%) para
+# conservar un decimal sin depender de awk ni de flotantes.
+# yt-dlp emite muchos eventos de progreso por segundo, así que
+# evitar un fork externo por cálculo es una optimización real.
+# ============================================================
+
+calculate_percent() {
+
+    local downloaded="$1"
+    local total="$2"
+
+    if [[ "$downloaded" =~ ^[0-9]+$ ]] &&
+       [[ "$total" =~ ^[0-9]+$ ]] &&
+       (( total > 0 )); then
+
+        local x10=$(( downloaded * 1000 / total ))
+        printf '%d.%d' "$((x10 / 10))" "$((x10 % 10))"
+
+    else
+        printf '0.0'
+    fi
+}
+
+clamp_percent() {
+
+    local value="$1"
+    local sign=""
+
+    if [[ "$value" == -* ]]; then
+        sign="-"
+        value="${value#-}"
+    fi
+
+    local x10="${value/./}"
+    x10=$((10#$x10))
+
+    [[ -n "$sign" ]] && x10=$(( -x10 ))
+
+    (( x10 < 0 )) && x10=0
+    (( x10 > 1000 )) && x10=1000
+
+    printf '%d.%d' "$((x10 / 10))" "$((x10 % 10))"
+}
+
+# ============================================================
+# Barra
+# ============================================================
+
+make_bar() {
+
+    local percent="$1"
+    local color="$2"
+
+    local x10="${percent/./}"
+    x10=$((10#$x10))
+
+    local filled=$(( (x10 * BAR_WIDTH + 500) / 1000 ))
+    local empty
+    local i
 
     (( filled < 0 )) && filled=0
     (( filled > BAR_WIDTH )) && filled=$BAR_WIDTH
 
-    printf -v bar '%*s' "$filled" '';                 bar="${bar// /█}"
-    printf -v pad '%*s' "$((BAR_WIDTH - filled))" '';   pad="${pad// /░}"
+    empty=$((BAR_WIDTH - filled))
 
-    printf -v "$3" '%s%s%s%s%s' "$2" "$bar" "$GRAY" "$pad" "$RESET"
+    printf "${color}"
+
+    for ((i = 0; i < filled; i++)); do
+        printf "█"
+    done
+
+    printf "${GRAY}"
+
+    for ((i = 0; i < empty; i++)); do
+        printf "░"
+    done
+
+    printf "${RESET}"
 }
 
 # ============================================================
-# Pantalla de progreso
+# Redibujado del progreso
+#
+# Se usa desplazamiento RELATIVO del cursor (\033[nA) en vez de
+# guardar/restaurar una posición absoluta (tput sc/rc, DECSC/
+# DECRC). El guardado absoluto se invalida en cuanto la terminal
+# hace scroll entre el guardado y la restauración —y aquí es
+# casi seguro que ya ocurrió scroll antes de llegar a esta
+# pantalla (menús, verificaciones, resumen de configuración).
+# El desplazamiento relativo, en cambio, solo depende de dónde
+# está el cursor en este momento, así que es inmune a cuánto
+# haya hecho scroll la terminal en el pasado.
+#
+# Cada línea se limpia por completo (\033[2K\r) antes de
+# reescribirla, y si el frame nuevo tiene menos líneas que el
+# anterior (la ventana de la playlist puede variar), las líneas
+# sobrantes se blanquean explícitamente para no dejar restos.
+# ============================================================
+
+progress_move_up() {
+    local lines="$1"
+    (( lines > 0 )) && printf '\033[%dA' "$lines"
+}
+
+progress_clear_trailing() {
+
+    local previous_lines="$1"
+    local new_lines="$2"
+
+    if (( new_lines < previous_lines )); then
+
+        local extra=$(( previous_lines - new_lines ))
+        local k
+
+        for ((k = 0; k < extra; k++)); do
+            printf '\033[2K\r\n'
+        done
+
+        progress_move_up "$extra"
+    fi
+}
+
+# ============================================================
+# Ancho de terminal
+#
+# Se consulta una vez por descarga (no por cada evento de
+# progreso) para acotar el largo de los títulos de la playlist
+# y evitar que una línea envuelva a una segunda fila visual,
+# lo que rompería el conteo de líneas del redibujado.
+# ============================================================
+
+get_terminal_width() {
+
+    local cols
+
+    cols="$(tput cols 2>/dev/null)"
+
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+
+    printf '%d' "$cols"
+}
+
+# ============================================================
+# Inicializar pantalla de progreso
 # ============================================================
 
 start_progress_screen() {
 
     PROGRESS_DRAWN=0
+    PROGRESS_LINES=0
+    TERM_COLS="$(get_terminal_width)"
+
+    local quality_label
+    quality_label="$(format_quality_label)"
 
     echo
 
     if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
 
-        echo -e "${BOLD}${WHITE}📋 $PLAYLIST_TITLE${RESET}"
+        printf "${CYAN}┌────────────────────────────────────────────────────────┐${RESET}\n"
+
+        playlist_box_line "📋 ${PLAYLIST_TITLE:0:48}"
 
         if (( PLAYLIST_COUNT > 0 )); then
-            echo -e "${DIM}$PLAYLIST_COUNT vídeos${RESET}"
+            playlist_box_line_split "${PLAYLIST_COUNT} vídeos" "$quality_label"
+        else
+            playlist_box_line_split "Cantidad no disponible" "$quality_label"
         fi
+
+        printf "${CYAN}└────────────────────────────────────────────────────────┘${RESET}\n"
 
         echo
 
     else
 
-        echo -e "${BOLD}${WHITE}🎬 $VIDEO_TITLE${RESET}"
+        echo -e "${BOLD}${WHITE}Descargando: ${VIDEO_TITLE}${RESET}"
+        echo -e "${DIM}Calidad:${RESET} ${GREEN}${quality_label}${RESET}"
         echo
 
-    fi
-
-    if [[ -t 1 ]]; then
-        tput sc
-        tput civis
-    fi
-}
-
-restore_and_clear_progress() {
-    if [[ -t 1 ]]; then
-        tput rc
-        tput ed
     fi
 }
 
@@ -632,22 +1012,35 @@ restore_and_clear_progress() {
 # Render vídeo individual
 # ============================================================
 
-render_single_progress() {  # $1=vp10 $2=ap10 $3=tp10 $4=speed $5=eta
+render_single_progress() {
 
-    local vp10=$1 ap10=$2 tp10=$3 speed=$4 eta=$5
-    local video_bar audio_bar total_bar
+    local video="$1"
+    local audio="$2"
+    local total="$3"
+    local speed="$4"
+    local eta="$5"
 
-    make_bar "$vp10" "$CYAN"    video_bar
-    make_bar "$ap10" "$MAGENTA" audio_bar
-    make_bar "$tp10" "$GREEN"   total_bar
+    local video_bar
+    local audio_bar
+    local total_bar
+
+    video_bar="$(make_bar "$video" "$CYAN")"
+    audio_bar="$(make_bar "$audio" "$MAGENTA")"
+    total_bar="$(make_bar "$total" "$GREEN")"
 
     if (( PROGRESS_DRAWN )); then
         restore_and_clear_progress
     fi
 
-    printf "  🎬 Vídeo  %s  %d.%d%%\n" "$video_bar" "((vp10/10))""((vp10 / 10))" "((vp10/10))""((vp10 % 10))"
-    printf "  🎵 Audio  %s  %d.%d%%\n" "$audio_bar" "((ap10/10))""((ap10 / 10))" "((ap10/10))""((ap10 % 10))"
-    printf "  ⚡ Total  %s  %d.%d%%\n" "$total_bar" "((tp10/10))""((tp10 / 10))" "((tp10/10))""((tp10 % 10))"
+    printf "  🎬 Vídeo  %s  %5.1f%%\n" \
+        "$video_bar" "$video"
+
+    printf "  🎵 Audio  %s  %5.1f%%\n" \
+        "$audio_bar" "$audio"
+
+    printf "  ⚡ Total  %s  %5.1f%%\n" \
+        "$total_bar" "$total"
+
     printf "  ${DIM}Velocidad:${RESET} ${CYAN}%s${RESET}" "$speed"
     printf "    ${DIM}ETA:${RESET} ${YELLOW}%s${RESET}\n" "$eta"
 
@@ -655,17 +1048,94 @@ render_single_progress() {  # $1=vp10 $2=ap10 $3=tp10 $4=speed $5=eta
 }
 
 # ============================================================
+# Preparar estado de playlist
+# ============================================================
+
+declare -a PL_INDEX
+declare -a PL_TITLE
+declare -a PL_STATUS
+
+load_playlist_entries() {
+
+    PL_INDEX=()
+    PL_TITLE=()
+    PL_STATUS=()
+
+    while IFS=$'\t' read -r idx title; do
+
+        [[ -n "$idx" ]] || continue
+
+        PL_INDEX+=("$idx")
+        PL_TITLE+=("$title")
+        PL_STATUS+=("pending")
+
+    done < <(
+        yt-dlp \
+            --flat-playlist \
+            --no-warnings \
+            --skip-download \
+            --print "%(playlist_index)s"$'\t'"%(title)s" \
+            "$URL" 2>/dev/null
+    )
+
+    # Si yt-dlp no devolvió la lista, al menos usamos la
+    # información que ya obtuvimos.
+    if (( ${#PL_INDEX[@]} == 0 )) &&
+       (( PLAYLIST_COUNT > 0 )); then
+
+        local i
+
+        for ((i = 1; i <= PLAYLIST_COUNT; i++)); do
+
+            PL_INDEX+=("$i")
+            PL_TITLE+=("Vídeo $i")
+            PL_STATUS+=("pending")
+
+        done
+    fi
+}
+
+# ============================================================
+# Ancho visual básico
+# ============================================================
+
+truncate_text() {
+
+    local text="$1"
+    local max="$2"
+
+    if (( ${#text} <= max )); then
+        printf '%s' "$text"
+    else
+        printf '%s…' "${text:0:max-1}"
+    fi
+}
+
+# ============================================================
 # Render playlist
 # ============================================================
 
 render_playlist_progress() {
-    # $1=index $2=title $3=speed $4=vp10 $5=ap10 $6=tp10
 
-    local current_index="$1" current_title="$2"
-    local speed="$3" vp10=$4 ap10=$5 tp10=$6
+    local current_index="$1"
+    local current_title="$2"
+    local total_percent="$3"
+    local video_percent="$4"
+    local audio_percent="$5"
+    local speed="$6"
+    local eta="$7"
 
-    local lines=() i idx title status marker
-    local start=0 end current_position=-1 max_visible=18
+    local lines=()
+
+    local i
+    local idx
+    local title
+    local status
+    local marker
+
+    # --------------------------------------------------------
+    # Crear lista
+    # --------------------------------------------------------
 
     for ((i = 0; i < ${#PL_INDEX[@]}; i++)); do
 
@@ -674,17 +1144,42 @@ render_playlist_progress() {
         status="${PL_STATUS[$i]}"
 
         case "$status" in
-            done)        marker="${GREEN}✓${RESET}" ;;
-            downloading) marker="${YELLOW}▶${RESET}" ;;
-            error)       marker="${RED}✗${RESET}"   ;;
-            *)           marker="${GRAY}○${RESET}"  ;;
+
+            done)
+                marker="${GREEN}✓${RESET}"
+                ;;
+
+            downloading)
+                marker="${YELLOW}▶${RESET}"
+                ;;
+
+            error)
+                marker="${RED}✗${RESET}"
+                ;;
+
+            *)
+                marker="${GRAY}○${RESET}"
+                ;;
+
         esac
 
         title="$(truncate_text "$title" 43)"
-        lines+=("$(printf '  %02d  %s  %s' "$((10#idx))" "$marker" "$title")")
+
+        lines+=(
+            "$(printf '  %02d  %s  %s' "$((10#$idx))" "$marker" "$title")"
+        )
+
     done
 
-    end="${#lines[@]}"
+    # --------------------------------------------------------
+    # Si hay demasiados elementos, mostrar una ventana.
+    # Esto no cambia la lista lógica.
+    # --------------------------------------------------------
+
+    local start=0
+    local end="${#lines[@]}"
+
+    local current_position=-1
 
     for ((i = 0; i < ${#PL_INDEX[@]}; i++)); do
         if [[ "${PL_INDEX[$i]}" == "$current_index" ]]; then
@@ -693,10 +1188,15 @@ render_playlist_progress() {
         fi
     done
 
+    # Máximo de 18 entradas visibles.
+    local max_visible=18
+
     if (( end > max_visible )); then
 
         start=$((current_position - 8))
+
         (( start < 0 )) && start=0
+
         end=$((start + max_visible))
 
         if (( end > ${#lines[@]} )); then
@@ -723,99 +1223,117 @@ render_playlist_progress() {
 
     printf "\n"
 
-    if [[ "$current_index" =~ ^[0-9]+$ ]] && (( PLAYLIST_COUNT > 0 )); then
+    if (( PLAYLIST_COUNT > 0 )); then
         printf "  ${BOLD}Vídeo actual:${RESET} %02d / %02d\n" \
-            "$((10#current_index))" "$PLAYLIST_COUNT"
+            "$((10#$current_index))" "$((10#$PLAYLIST_COUNT))"
     else
-        printf "  ${BOLD}Vídeo actual:${RESET} %s\n" "${current_index:--}"
+        printf "  ${BOLD}Vídeo actual:${RESET} %02d\n" \
+            "$((10#$current_index))"
     fi
 
-    local total_bar
-    make_bar "$tp10" "$GREEN" total_bar
+    local bar
+    bar="$(make_bar "$total_percent" "$GREEN")"
 
-    printf "  %s  %d.%d%%\n" "$total_bar" "((tp10/10))""((tp10 / 10))" "((tp10/10))""((tp10 % 10))"
-    printf "  ${CYAN}video: %d.%d%%${RESET} | ${MAGENTA}audio: %d.%d%%${RESET} | ${CYAN}%s${RESET} | ${YELLOW}ETA %s${RESET}\n" \
-        "((vp10/10))""((vp10 / 10))" "((vp10/10))""((vp10 % 10))" \
-        "((ap10/10))""((ap10 / 10))" "((ap10/10))""((ap10 % 10))" \
-        "$speed" "$eta"
+    printf "  %s  %5.1f%%\n" \
+        "$bar" "$total_percent"
+
+    printf "  ${CYAN}video: %.1f%%${RESET} | ${MAGENTA}audio: %.1f%%${RESET} | ${CYAN}%s${RESET} | ${YELLOW}ETA %s${RESET}\n" \
+        "$video_percent" \
+        "$audio_percent" \
+        "$speed" \
+        "$eta"
 
     PROGRESS_DRAWN=1
 }
-# ============================================================
-# Estados de playlist
-# ============================================================
-
-mark_playlist_status() {  # $1=index  $2=status
-    local j
-    for ((j = 0; j < ${#PL_INDEX[@]}; j++)); do
-        if [[ "${PL_INDEX[$j]}" == "$1" ]]; then
-            PL_STATUS[$j]="$2"
-            return
-        fi
-    done
-}
 
 # ============================================================
-# Evento de progreso
+# Procesar evento de progreso
 # ============================================================
 
 process_progress_event() {
-    # $1=vcodec $2=acodec $3=downloaded $4=total $5=estimated
-    # $6=speed $7=eta $8=playlist_index $9=item_title
 
-    local video_codec="$1" audio_codec="$2" downloaded="$3" total="$4"
-    local estimated="$5" speed="$6" eta="$7"
-    local playlist_index="$8" item_title="$9"
+    local marker="$1"
+    local video_codec="$2"
+    local audio_codec="$3"
+    local downloaded="$4"
+    local total="$5"
+    local estimated="$6"
+    local speed="$7"
+    local eta="$8"
 
     [[ "$downloaded" =~ ^[0-9]+$ ]] || downloaded=0
 
     local current_total=0
 
-    if [[ "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+    if [[ "$total" =~ ^[0-9]+$ ]] &&
+       (( total > 0 )); then
+
         current_total="$total"
-    elif [[ "$estimated" =~ ^[0-9]+$ ]] && (( estimated > 0 )); then
+
+    elif [[ "$estimated" =~ ^[0-9]+$ ]] &&
+         (( estimated > 0 )); then
+
         current_total="$estimated"
     fi
 
-    if [[ "$video_codec" != "none" && "$audio_codec" == "none" ]]; then
-        VP10="$(pct10 "$downloaded" "$current_total")"
-    elif [[ "$video_codec" == "none" && "$audio_codec" != "none" ]]; then
-        AP10="$(pct10 "$downloaded" "$current_total")"
+    local vp="$VIDEO_PERCENT"
+    local ap="$AUDIO_PERCENT"
+
+    if [[ "$video_codec" != "none" &&
+          "$audio_codec" == "none" ]]; then
+
+        if (( current_total > 0 )); then
+            vp="$(calculate_percent "$downloaded" "$current_total")"
+        fi
+
+    elif [[ "$video_codec" == "none" &&
+            "$audio_codec" != "none" ]]; then
+
+        if (( current_total > 0 )); then
+            ap="$(calculate_percent "$downloaded" "$current_total")"
+        fi
+
     else
-        VP10="$(pct10 "$downloaded" "$current_total")"
-        AP10="$VP10"
+
+        if (( current_total > 0 )); then
+            vp="$(calculate_percent "$downloaded" "$current_total")"
+            ap="$vp"
+        fi
     fi
 
-    TP10=$(( (VP10 + AP10) / 2 ))
+    vp="$(clamp_percent "$vp")"
+    ap="$(clamp_percent "$ap")"
 
-    # Velocidad/ETA ya vienen formateadas por yt-dlp.
-    [[ -n "$speed" ]] && DOWNLOAD_SPEED="$(trim "$speed")"
-    [[ -n "$eta" ]]   && DOWNLOAD_ETA="$(trim "$eta")"
+    local vp10 ap10 tp10 tp
+
+    vp10=$((10#${vp/./}))
+    ap10=$((10#${ap/./}))
+    tp10=$(( (vp10 + ap10) / 2 ))
+
+    tp="$(printf '%d.%d' "$((tp10 / 10))" "$((tp10 % 10))")"
+
+    VIDEO_PERCENT="$vp"
+    AUDIO_PERCENT="$ap"
+    TOTAL_PERCENT="$(clamp_percent "$tp")"
 
     # ----------------------------------------------------------
-    # Playlist: cuando llega un índice distinto al actual, el
-    # ítem anterior terminó (bien o con error, yt-dlp sigue con
-    # --ignore-errors). Lo marcamos done y pasamos al nuevo.
+    # Velocidad y ETA ya vienen formateadas por yt-dlp
+    # (progress._speed_str / progress._eta_str), con la unidad
+    # correcta (KiB/MiB/GiB) y sin necesidad de convertir bytes
+    # a mano. Solo se recortan espacios sobrantes que yt-dlp
+    # a veces añade para alinear su propia barra.
     # ----------------------------------------------------------
 
-    if [[ "$PLAYLIST_MODE" == "playlist" &&
-          "$playlist_index" =~ ^[0-9]+$ ]]; then
+    if [[ -n "$speed" ]]; then
+        speed="${speed#"${speed%%[![:space:]]*}"}"
+        speed="${speed%"${speed##*[![:space:]]}"}"
+        DOWNLOAD_SPEED="$speed"
+    fi
 
-        if [[ -n "$CURRENT_VIDEO_INDEX" &&
-              "$CURRENT_VIDEO_INDEX" =~ ^[0-9]+$ &&
-              "$CURRENT_VIDEO_INDEX" != "$playlist_index" ]]; then
-
-            mark_playlist_status "$CURRENT_VIDEO_INDEX" "done"
-        fi
-
-        if [[ "$CURRENT_VIDEO_INDEX" != "$playlist_index" ]]; then
-            CURRENT_VIDEO_INDEX="$playlist_index"
-            mark_playlist_status "$playlist_index" "downloading"
-        fi
-
-        if [[ -n "$item_title" ]]; then
-            CURRENT_VIDEO_TITLE="$item_title"
-        fi
+    if [[ -n "$eta" ]]; then
+        eta="${eta#"${eta%%[![:space:]]*}"}"
+        eta="${eta%"${eta##*[![:space:]]}"}"
+        DOWNLOAD_ETA="$eta"
     fi
 
     if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
@@ -823,102 +1341,196 @@ process_progress_event() {
         render_playlist_progress \
             "${CURRENT_VIDEO_INDEX:-1}" \
             "$CURRENT_VIDEO_TITLE" \
+            "$TOTAL_PERCENT" \
+            "$VIDEO_PERCENT" \
+            "$AUDIO_PERCENT" \
             "$DOWNLOAD_SPEED" \
-            "$VP10" "$AP10" "$TP10"
+            "$DOWNLOAD_ETA"
 
     else
 
         render_single_progress \
-            "$VP10" "$AP10" "$TP10" \
-            "$DOWNLOAD_SPEED" "$DOWNLOAD_ETA"
+            "$VIDEO_PERCENT" \
+            "$AUDIO_PERCENT" \
+            "$TOTAL_PERCENT" \
+            "$DOWNLOAD_SPEED" \
+            "$DOWNLOAD_ETA"
 
     fi
 }
 
 # ============================================================
-# Descargar (coproc en vez de FIFO)
+# Descargar
 # ============================================================
 
 download_video() {
 
-    local format error_file yt_status
-    local marker playlist_index item_title video_codec audio_codec
-    local downloaded total estimated speed eta
+    local format
+    local progress_fifo
+    local error_file
+    local yt_pid
+    local yt_status
 
     format="bestvideo[height<=${VIDEO_HEIGHT}]+${AUDIO_SELECTOR}/best[height<=${VIDEO_HEIGHT}]"
 
     mkdir -p "$DOWNLOAD_DIR"
 
-    VP10=0  AP10=0  TP10=0
-    DOWNLOAD_SPEED="--"  DOWNLOAD_ETA="--"
-    CURRENT_VIDEO_INDEX=""  CURRENT_VIDEO_TITLE=""
+    VIDEO_PERCENT="0.0"
+    AUDIO_PERCENT="0.0"
+    TOTAL_PERCENT="0.0"
+
+    DOWNLOAD_SPEED="--"
+    DOWNLOAD_ETA="--"
+
+    # --------------------------------------------------------
+    # Playlist
+    # --------------------------------------------------------
 
     if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
 
         load_playlist_entries
 
         if (( ${#PL_INDEX[@]} == 0 )); then
+
             warning "No se pudo obtener el contenido de la playlist."
             warning "yt-dlp intentará procesarla directamente."
+
         fi
+
     fi
 
+    progress_fifo="$(mktemp -u)"
     error_file="$(mktemp)"
+
+    mkfifo "$progress_fifo"
+
+    # Si el usuario interrumpe la descarga (Ctrl+C), este trap
+    # evita dejar el proceso de yt-dlp huérfano y el FIFO/archivo
+    # temporal abandonados en /tmp.
+    trap '
+        [[ -n "$yt_pid" ]] && kill "$yt_pid" 2>/dev/null
+        rm -f "$progress_fifo" "$error_file"
+        exit 130
+    ' INT TERM
+
+    # --------------------------------------------------------
+    # Arrancar interfaz
+    # --------------------------------------------------------
 
     start_progress_screen
 
+    # --------------------------------------------------------
+    # Opciones
+    # --------------------------------------------------------
+
     local playlist_options=()
+
     if [[ "$PLAYLIST_MODE" == "single" ]]; then
         playlist_options+=(--no-playlist)
     fi
 
-    yt_pid=""
+    # --------------------------------------------------------
+    # yt-dlp
+    #
+    # Importante:
+    # --quiet evita que yt-dlp pinte su propio progreso.
+    # Nuestro renderer es el único que actualiza la pantalla.
+    # --------------------------------------------------------
+
+    yt-dlp \
+        "${playlist_options[@]}" \
+        --format "$format" \
+        --merge-output-format mp4 \
+        --output "$DOWNLOAD_DIR/%(title)s.%(ext)s" \
+        --newline \
+        --quiet \
+        --no-warnings \
+        --progress \
+        --progress-template=$'download:SMV\t%(playlist_index)s\t%(title)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress._speed_str)s\t%(progress._eta_str)s' \
+        "$URL" >"$progress_fifo" 2>"$error_file" &
+
+    yt_pid=$!
 
     # --------------------------------------------------------
-    # coproc: bash gestiona el pipe; sin mkfifo ni limpieza manual.
-    # --ignore-errors permite que una playlist continúe tras fallos.
+    # Leer eventos
     # --------------------------------------------------------
 
-    coproc YT {
-        yt-dlp \
-            "${playlist_options[@]}" \
-            --ignore-errors \
-            --format "$format" \
-            --merge-output-format mp4 \
-            --output "$DOWNLOAD_DIR/%(title)s.%(ext)s" \
-            --newline --quiet --no-warnings --progress \
-            --progress-template=$'download:SMV\t%(playlist_index)s\t%(title)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress._speed_str)s\t%(progress._eta_str)s' \
-            "$URL" 2>"$error_file"
-    }
-    yt_pid="$YT_PID"
-
-    while IFS=$'\t' read -r -u "${YT[0]}" \
-        marker playlist_index item_title video_codec audio_codec \
-        downloaded total estimated speed eta; do
+    while IFS=$'\t' read -r \
+        marker \
+        playlist_index \
+        item_title \
+        video_codec \
+        audio_codec \
+        downloaded \
+        total \
+        estimated \
+        speed \
+        eta; do
 
         [[ "$marker" == "SMV" ]] || continue
 
+        # ----------------------------------------------------
+        # Playlist: actualizar vídeo actual
+        # ----------------------------------------------------
+
+        if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
+
+            if [[ "$playlist_index" =~ ^[0-9]+$ ]]; then
+
+                CURRENT_VIDEO_INDEX="$playlist_index"
+
+                if [[ -n "$item_title" ]]; then
+                    CURRENT_VIDEO_TITLE="$item_title"
+                fi
+
+                local j
+
+                for ((j = 0; j < ${#PL_INDEX[@]}; j++)); do
+
+                    if [[ "${PL_INDEX[$j]}" == "$playlist_index" ]]; then
+                        PL_STATUS[$j]="downloading"
+                    fi
+
+                done
+            fi
+        fi
+
         process_progress_event \
-            "$video_codec" "$audio_codec" \
-            "$downloaded" "$total" "$estimated" \
-            "$speed" "$eta" \
-            "$playlist_index" "$item_title"
+            "$marker" \
+            "$video_codec" \
+            "$audio_codec" \
+            "$downloaded" \
+            "$total" \
+            "$estimated" \
+            "$speed" \
+            "$eta"
 
-    done
+    done <"$progress_fifo"
 
-    exec {YT[0]}<&- 2>/dev/null
     wait "$yt_pid"
     yt_status=$?
-    yt_pid=""
 
-    # Estado final del último ítem.
+    rm -f "$progress_fifo"
+
+    # --------------------------------------------------------
+    # Marcar vídeo actual como terminado
+    # --------------------------------------------------------
+
     if [[ "$PLAYLIST_MODE" == "playlist" &&
-          "$CURRENT_VIDEO_INDEX" =~ ^[0-9]+$ ]]; then
+          "$yt_status" -eq 0 ]]; then
 
-        if (( yt_status == 0 )); then
-            mark_playlist_status "$CURRENT_VIDEO_INDEX" "done"
-        else
-            mark_playlist_status "$CURRENT_VIDEO_INDEX" "error"
+        if [[ "$CURRENT_VIDEO_INDEX" =~ ^[0-9]+$ ]]; then
+
+            local j
+
+            for ((j = 0; j < ${#PL_INDEX[@]}; j++)); do
+
+                if [[ "${PL_INDEX[$j]}" == "$CURRENT_VIDEO_INDEX" ]]; then
+                    PL_STATUS[$j]="done"
+                    break
+                fi
+
+            done
         fi
     fi
 
@@ -930,14 +1542,23 @@ download_video() {
 
         if [[ "$PLAYLIST_MODE" == "single" ]]; then
 
-            render_single_progress 1000 1000 1000 "completado" "00:00"
+            render_single_progress \
+                "100.0" \
+                "100.0" \
+                "100.0" \
+                "completado" \
+                "00:00"
 
         else
 
             render_playlist_progress \
                 "${CURRENT_VIDEO_INDEX:-1}" \
                 "$CURRENT_VIDEO_TITLE" \
-                "completado" 1000 1000 1000
+                "100.0" \
+                "100.0" \
+                "100.0" \
+                "completado" \
+                "00:00"
 
         fi
 
@@ -949,18 +1570,28 @@ download_video() {
         echo
 
         rm -f "$error_file"
+
         return 0
+
     fi
 
+    # --------------------------------------------------------
+    # Error
+    # --------------------------------------------------------
+
     echo
+
     error "La descarga ha fallado."
 
     if [[ -s "$error_file" ]]; then
+
         echo
         cat "$error_file"
+
     fi
 
     rm -f "$error_file"
+
     return "$yt_status"
 }
 
@@ -970,7 +1601,7 @@ download_video() {
 
 download_loop() {
 
-    while :; do
+    while true; do
 
         if download_video; then
             return 0
@@ -983,17 +1614,31 @@ download_loop() {
         echo "  2) Salir"
         echo
 
-        case "$(ask_option "Selecciona" "1-2")" in
-            1)
-                echo
-                msg "Reintentando descarga..."
-                echo
-                ;;
-            2)
-                warning "Saliendo."
-                return 1
-                ;;
-        esac
+        while true; do
+
+            read -r -p "Selecciona [1-2]: " retry
+
+            case "$retry" in
+
+                1)
+                    echo
+                    msg "Reintentando descarga..."
+                    echo
+                    break
+                    ;;
+
+                2)
+                    warning "Saliendo."
+                    return 1
+                    ;;
+
+                *)
+                    warning "Opción no válida."
+                    ;;
+
+            esac
+
+        done
     done
 }
 
@@ -1004,17 +1649,20 @@ download_loop() {
 main() {
 
     check_dependencies
+
     load_config
 
-    local audio_label
-    case "$DEFAULT_AUDIO" in
-        best) audio_label="mejor disponible" ;;
-        *)    audio_label="≤${DEFAULT_AUDIO} kbps" ;;
-    esac
+    while true; do
 
-    while :; do
+        # ----------------------------------------------------
+        # URL
+        # ----------------------------------------------------
 
         ask_url
+
+        # ----------------------------------------------------
+        # Información
+        # ----------------------------------------------------
 
         if ! get_video_info; then
 
@@ -1025,17 +1673,34 @@ main() {
             echo "  2) Salir"
             echo
 
-            if [[ "$(ask_option "Selecciona" "1-2")" != "1" ]]; then
+            read -r -p "Selecciona [1-2]: " choice
+
+            if [[ "$choice" != "1" ]]; then
                 exit 1
             fi
 
             continue
         fi
 
+        # ----------------------------------------------------
+        # Calidad
+        # ----------------------------------------------------
+
+        detect_4k
+
         select_quality
 
+        # ----------------------------------------------------
+        # Playlist
+        # ----------------------------------------------------
+
         detect_playlist
+
         show_playlist_selection
+
+        # ----------------------------------------------------
+        # Resumen
+        # ----------------------------------------------------
 
         echo
         echo -e "${BOLD}Configuración de descarga${RESET}"
@@ -1048,22 +1713,40 @@ main() {
         fi
 
         echo "Vídeo  : ${VIDEO_HEIGHT}p"
-        echo "Audio  : $audio_label"
-        echo "Destino: $DOWNLOAD_DIR"
+        echo "Audio  : ${DEFAULT_AUDIO}"
+        echo "Destino: ${DOWNLOAD_DIR}"
+
         echo "----------------------------------------"
         echo
+
+        # ----------------------------------------------------
+        # Descargar
+        # ----------------------------------------------------
 
         if download_loop; then
 
             echo
 
-            if ask_yesno "¿Descargar otro vídeo?"; then
-                clear
-                continue
-            fi
+            read -r -p "¿Descargar otro vídeo? [S/n]: " another
 
-            success "Hasta luego."
-            exit 0
+            case "${another,,}" in
+
+                ""|s|si|sí)
+                    clear
+                    continue
+                    ;;
+
+                n|no)
+                    success "Hasta luego."
+                    exit 0
+                    ;;
+
+                *)
+                    success "Hasta luego."
+                    exit 0
+                    ;;
+
+            esac
 
         else
 
@@ -1074,5 +1757,5 @@ main() {
     done
 }
 
-main "$"
+main "$@"
 
