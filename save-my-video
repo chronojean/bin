@@ -30,18 +30,18 @@ BAR_WIDTH=32
 # Colores
 # ============================================================
 
-RESET='\033[0m'
-BOLD='\033[1m'
-DIM='\033[2m'
+RESET=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
 
-RED='\033[38;5;203m'
-GREEN='\033[38;5;82m'
-YELLOW='\033[38;5;220m'
-BLUE='\033[38;5;75m'
-CYAN='\033[38;5;51m'
-MAGENTA='\033[38;5;213m'
-WHITE='\033[38;5;255m'
-GRAY='\033[38;5;245m'
+RED=$'\033[38;5;203m'
+GREEN=$'\033[38;5;82m'
+YELLOW=$'\033[38;5;220m'
+BLUE=$'\033[38;5;75m'
+CYAN=$'\033[38;5;51m'
+MAGENTA=$'\033[38;5;213m'
+WHITE=$'\033[38;5;255m'
+GRAY=$'\033[38;5;245m'
 
 # ============================================================
 # Variables
@@ -49,6 +49,7 @@ GRAY='\033[38;5;245m'
 
 URL=""
 VIDEO_TITLE=""
+MAX_AVAILABLE_HEIGHT=""
 
 HAS_4K=0
 
@@ -466,11 +467,18 @@ get_video_info() {
     msg "Verificando enlace..."
     echo
 
+    # Se pide el título Y la altura del formato por defecto en
+    # la MISMA consulta. El selector por defecto de yt-dlp ya
+    # elige el vídeo de mayor resolución disponible, así que
+    # este "height" nos sirve directamente para saber si hay 4K
+    # sin necesitar una segunda consulta (--list-formats) más
+    # adelante.
+
     if ! yt-dlp \
         --no-warnings \
         --skip-download \
         --no-playlist \
-        --print "%(title)s" \
+        --print "%(title)s"$'\t'"%(height)s" \
         "$URL" >"$title_file" 2>"$error_file"; then
 
         error "No se pudo verificar el enlace."
@@ -483,7 +491,9 @@ get_video_info() {
         return 1
     fi
 
-    VIDEO_TITLE="$(head -n 1 "$title_file")"
+    IFS=$'\t' read -r VIDEO_TITLE MAX_AVAILABLE_HEIGHT < "$title_file"
+
+    [[ "$MAX_AVAILABLE_HEIGHT" =~ ^[0-9]+$ ]] || MAX_AVAILABLE_HEIGHT=""
 
     rm -f "$title_file" "$error_file"
 
@@ -707,6 +717,28 @@ show_playlist_selection() {
 
 detect_4k() {
 
+    # Caso normal: la altura ya se obtuvo junto con el título
+    # en get_video_info() -- no hace falta otra consulta.
+
+    if [[ -n "$MAX_AVAILABLE_HEIGHT" ]]; then
+
+        msg "Comprobando disponibilidad de 4K..."
+
+        if (( MAX_AVAILABLE_HEIGHT >= 2160 )); then
+            HAS_4K=1
+            success "✓ 4K (2160p) disponible."
+        else
+            HAS_4K=0
+            warning "4K no disponible."
+        fi
+
+        return
+    fi
+
+    # Respaldo: si por lo que sea no llegó la altura (algunos
+    # extractores no la exponen en el nivel superior), se hace
+    # la consulta completa de formatos como antes.
+
     msg "Comprobando disponibilidad de 4K..."
 
     local formats
@@ -820,8 +852,13 @@ TOTAL_PERCENT="0.0"
 DOWNLOAD_SPEED="--"
 DOWNLOAD_ETA="--"
 
+LAST_RENDER_TIME=0
+
 CURRENT_VIDEO_INDEX=""
 CURRENT_VIDEO_TITLE=""
+CURRENT_VIDEO_POSITION=-1
+PREVIOUS_VIDEO_KEY=""
+PREVIOUS_VIDEO_POSITION=-1
 
 # ============================================================
 # Porcentaje (aritmética entera en bash, sin awk)
@@ -976,6 +1013,7 @@ start_progress_screen() {
 
     PROGRESS_DRAWN=0
     PROGRESS_LINES=0
+    LAST_RENDER_TIME=0
     TERM_COLS="$(get_terminal_width)"
 
     local quality_label
@@ -1029,21 +1067,22 @@ render_single_progress() {
     total_bar="$(make_bar "$total" "$GREEN")"
 
     if (( PROGRESS_DRAWN )); then
-        restore_and_clear_progress
+        progress_move_up "$PROGRESS_LINES"
     fi
 
-    printf "  🎬 Vídeo  %s  %5.1f%%\n" \
+    printf "\033[2K\r  🎬 Vídeo  %s  %5.1f%%\n" \
         "$video_bar" "$video"
 
-    printf "  🎵 Audio  %s  %5.1f%%\n" \
+    printf "\033[2K\r  🎵 Audio  %s  %5.1f%%\n" \
         "$audio_bar" "$audio"
 
-    printf "  ⚡ Total  %s  %5.1f%%\n" \
+    printf "\033[2K\r  ⚡ Total  %s  %5.1f%%\n" \
         "$total_bar" "$total"
 
-    printf "  ${DIM}Velocidad:${RESET} ${CYAN}%s${RESET}" "$speed"
+    printf "\033[2K\r  ${DIM}Velocidad:${RESET} ${CYAN}%s${RESET}" "$speed"
     printf "    ${DIM}ETA:${RESET} ${YELLOW}%s${RESET}\n" "$eta"
 
+    PROGRESS_LINES=4
     PROGRESS_DRAWN=1
 }
 
@@ -1096,6 +1135,52 @@ load_playlist_entries() {
 }
 
 # ============================================================
+# Ubicar un vídeo de la playlist por título (o, si no hay
+# coincidencia, por índice)
+#
+# Se usa el título como clave principal porque es el mismo
+# dato que yt-dlp necesita para nombrar el archivo de salida,
+# así que se actualiza de forma fiable en cada vídeo. El
+# %(playlist_index)s del evento de progreso no siempre se
+# mantiene consistente con el de la extracción --flat-playlist
+# usada para armar PL_INDEX/PL_TITLE (yt-dlp ha cambiado ese
+# comportamiento entre versiones), así que solo se usa como
+# respaldo cuando el título no encuentra coincidencia.
+#
+# Devuelve la posición (0-based) por stdout, o -1 si no
+# encuentra nada.
+# ============================================================
+
+find_playlist_position() {
+
+    local title="$1"
+    local index="$2"
+    local i
+
+    if [[ -n "$title" ]]; then
+
+        for ((i = 0; i < ${#PL_TITLE[@]}; i++)); do
+            if [[ "${PL_TITLE[$i]}" == "$title" ]]; then
+                printf '%d' "$i"
+                return 0
+            fi
+        done
+    fi
+
+    if [[ "$index" =~ ^[0-9]+$ ]]; then
+
+        for ((i = 0; i < ${#PL_INDEX[@]}; i++)); do
+            if [[ "${PL_INDEX[$i]}" == "$index" ]]; then
+                printf '%d' "$i"
+                return 0
+            fi
+        done
+    fi
+
+    printf '%d' -1
+}
+
+# ============================================================
 # Ancho visual básico
 # ============================================================
 
@@ -1118,7 +1203,7 @@ truncate_text() {
 render_playlist_progress() {
 
     local current_index="$1"
-    local current_title="$2"
+    local current_position="$2"
     local total_percent="$3"
     local video_percent="$4"
     local audio_percent="$5"
@@ -1174,19 +1259,14 @@ render_playlist_progress() {
     # --------------------------------------------------------
     # Si hay demasiados elementos, mostrar una ventana.
     # Esto no cambia la lista lógica.
+    #
+    # current_position ya viene calculada por quien llama (se
+    # determina una sola vez, al detectar el cambio de vídeo,
+    # comparando por título -- ver find_playlist_position).
     # --------------------------------------------------------
 
     local start=0
     local end="${#lines[@]}"
-
-    local current_position=-1
-
-    for ((i = 0; i < ${#PL_INDEX[@]}; i++)); do
-        if [[ "${PL_INDEX[$i]}" == "$current_index" ]]; then
-            current_position="$i"
-            break
-        fi
-    done
 
     # Máximo de 18 entradas visibles.
     local max_visible=18
@@ -1206,43 +1286,58 @@ render_playlist_progress() {
     fi
 
     if (( PROGRESS_DRAWN )); then
-        restore_and_clear_progress
+        progress_move_up "$PROGRESS_LINES"
     fi
 
+    local new_lines=0
+
     for ((i = start; i < end; i++)); do
-        printf "%s\n" "${lines[$i]}"
+        printf "\033[2K\r%s\n" "${lines[$i]}"
+        ((new_lines++))
     done
 
     if (( start > 0 )); then
-        printf "  ${DIM}↑ más vídeos arriba${RESET}\n"
+        printf "\033[2K\r  ${DIM}↑ más vídeos arriba${RESET}\n"
+        ((new_lines++))
     fi
 
     if (( end < ${#lines[@]} )); then
-        printf "  ${DIM}↓ más vídeos abajo${RESET}\n"
+        printf "\033[2K\r  ${DIM}↓ más vídeos abajo${RESET}\n"
+        ((new_lines++))
     fi
 
-    printf "\n"
+    printf "\033[2K\r\n"
+    ((new_lines++))
 
     if (( PLAYLIST_COUNT > 0 )); then
-        printf "  ${BOLD}Vídeo actual:${RESET} %02d / %02d\n" \
+        printf "\033[2K\r  ${BOLD}Vídeo actual:${RESET} %02d / %02d\n" \
             "$((10#$current_index))" "$((10#$PLAYLIST_COUNT))"
     else
-        printf "  ${BOLD}Vídeo actual:${RESET} %02d\n" \
+        printf "\033[2K\r  ${BOLD}Vídeo actual:${RESET} %02d\n" \
             "$((10#$current_index))"
     fi
+
+    ((new_lines++))
 
     local bar
     bar="$(make_bar "$total_percent" "$GREEN")"
 
-    printf "  %s  %5.1f%%\n" \
+    printf "\033[2K\r  %s  %5.1f%%\n" \
         "$bar" "$total_percent"
 
-    printf "  ${CYAN}video: %.1f%%${RESET} | ${MAGENTA}audio: %.1f%%${RESET} | ${CYAN}%s${RESET} | ${YELLOW}ETA %s${RESET}\n" \
+    ((new_lines++))
+
+    printf "\033[2K\r  ${CYAN}video: %.1f%%${RESET} | ${MAGENTA}audio: %.1f%%${RESET} | ${CYAN}%s${RESET} | ${YELLOW}ETA %s${RESET}\n" \
         "$video_percent" \
         "$audio_percent" \
         "$speed" \
         "$eta"
 
+    ((new_lines++))
+
+    progress_clear_trailing "$PROGRESS_LINES" "$new_lines"
+
+    PROGRESS_LINES="$new_lines"
     PROGRESS_DRAWN=1
 }
 
@@ -1336,11 +1431,29 @@ process_progress_event() {
         DOWNLOAD_ETA="$eta"
     fi
 
+    # ----------------------------------------------------------
+    # Limitar el redibujado a ~1 vez por segundo
+    #
+    # yt-dlp puede emitir decenas de eventos de progreso por
+    # segundo. El estado (porcentajes, velocidad, ETA, PL_STATUS)
+    # se actualiza en CADA evento arriba, pero la pantalla solo
+    # se repinta como máximo una vez por segundo -- eso es lo
+    # único que limita la tasa de redibujado.
+    # ----------------------------------------------------------
+
+    local now="${EPOCHSECONDS:-$(date +%s)}"
+
+    if (( now - LAST_RENDER_TIME < 1 )); then
+        return
+    fi
+
+    LAST_RENDER_TIME="$now"
+
     if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
 
         render_playlist_progress \
             "${CURRENT_VIDEO_INDEX:-1}" \
-            "$CURRENT_VIDEO_TITLE" \
+            "$CURRENT_VIDEO_POSITION" \
             "$TOTAL_PERCENT" \
             "$VIDEO_PERCENT" \
             "$AUDIO_PERCENT" \
@@ -1446,7 +1559,7 @@ download_video() {
         --quiet \
         --no-warnings \
         --progress \
-        --progress-template=$'download:SMV\t%(playlist_index)s\t%(title)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress._speed_str)s\t%(progress._eta_str)s' \
+        --progress-template=$'download:SMV\t%(info.playlist_index)s\t%(info.title)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress._speed_str)s\t%(progress._eta_str)s' \
         "$URL" >"$progress_fifo" 2>"$error_file" &
 
     yt_pid=$!
@@ -1470,29 +1583,53 @@ download_video() {
         [[ "$marker" == "SMV" ]] || continue
 
         # ----------------------------------------------------
-        # Playlist: actualizar vídeo actual
+        # Playlist: detectar cambio de vídeo
+        #
+        # Se detecta por TÍTULO, no por playlist_index: el
+        # título es el mismo dato que yt-dlp usa para nombrar
+        # el archivo de salida, así que se actualiza de forma
+        # fiable en cada vídeo. Cuando el título cambia respecto
+        # al evento anterior, el vídeo previo ya terminó.
         # ----------------------------------------------------
 
-        if [[ "$PLAYLIST_MODE" == "playlist" ]]; then
+        if [[ "$PLAYLIST_MODE" == "playlist" &&
+              -n "$item_title" &&
+              "$item_title" != "NA" &&
+              "$item_title" != "$PREVIOUS_VIDEO_KEY" ]]; then
 
-            if [[ "$playlist_index" =~ ^[0-9]+$ ]]; then
-
-                CURRENT_VIDEO_INDEX="$playlist_index"
-
-                if [[ -n "$item_title" ]]; then
-                    CURRENT_VIDEO_TITLE="$item_title"
-                fi
-
-                local j
-
-                for ((j = 0; j < ${#PL_INDEX[@]}; j++)); do
-
-                    if [[ "${PL_INDEX[$j]}" == "$playlist_index" ]]; then
-                        PL_STATUS[$j]="downloading"
-                    fi
-
-                done
+            if (( PREVIOUS_VIDEO_POSITION >= 0 )); then
+                PL_STATUS[$PREVIOUS_VIDEO_POSITION]="done"
             fi
+
+            local position
+            position="$(find_playlist_position "$item_title" "$playlist_index")"
+
+            if (( position >= 0 )); then
+
+                CURRENT_VIDEO_POSITION="$position"
+                CURRENT_VIDEO_INDEX=$((position + 1))
+                PL_STATUS[$position]="downloading"
+
+            elif [[ "$playlist_index" =~ ^[0-9]+$ ]]; then
+
+                CURRENT_VIDEO_POSITION=-1
+                CURRENT_VIDEO_INDEX=$((10#$playlist_index))
+
+            fi
+
+            PREVIOUS_VIDEO_KEY="$item_title"
+            PREVIOUS_VIDEO_POSITION="$CURRENT_VIDEO_POSITION"
+            CURRENT_VIDEO_TITLE="$item_title"
+
+            # Nuevo vídeo: los porcentajes del anterior no
+            # aplican. Sin este reinicio, el audio se queda
+            # mostrando el 100% del vídeo previo hasta que
+            # empieza su propia fase de audio (el vídeo sí se
+            # reiniciaba solo porque su fase arranca primero).
+            VIDEO_PERCENT="0.0"
+            AUDIO_PERCENT="0.0"
+            TOTAL_PERCENT="0.0"
+
         fi
 
         process_progress_event \
@@ -1513,25 +1650,19 @@ download_video() {
     rm -f "$progress_fifo"
 
     # --------------------------------------------------------
-    # Marcar vídeo actual como terminado
+    # Marcar el último vídeo como terminado
+    #
+    # Los vídeos anteriores ya se marcan "done" al detectar el
+    # cambio de título dentro del bucle. El último no dispara
+    # esa transición (no llega un "siguiente" evento), así que
+    # se marca aquí una vez que yt-dlp terminó con éxito.
     # --------------------------------------------------------
 
     if [[ "$PLAYLIST_MODE" == "playlist" &&
-          "$yt_status" -eq 0 ]]; then
+          "$yt_status" -eq 0 &&
+          "$CURRENT_VIDEO_POSITION" -ge 0 ]]; then
 
-        if [[ "$CURRENT_VIDEO_INDEX" =~ ^[0-9]+$ ]]; then
-
-            local j
-
-            for ((j = 0; j < ${#PL_INDEX[@]}; j++)); do
-
-                if [[ "${PL_INDEX[$j]}" == "$CURRENT_VIDEO_INDEX" ]]; then
-                    PL_STATUS[$j]="done"
-                    break
-                fi
-
-            done
-        fi
+        PL_STATUS[$CURRENT_VIDEO_POSITION]="done"
     fi
 
     # --------------------------------------------------------
@@ -1553,7 +1684,7 @@ download_video() {
 
             render_playlist_progress \
                 "${CURRENT_VIDEO_INDEX:-1}" \
-                "$CURRENT_VIDEO_TITLE" \
+                "$CURRENT_VIDEO_POSITION" \
                 "100.0" \
                 "100.0" \
                 "100.0" \
