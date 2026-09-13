@@ -1,0 +1,1037 @@
+#!/usr/bin/env bash
+
+set -u
+
+# ============================================================
+# Save My Video
+#
+# Requiere:
+#   - yt-dlp
+#   - ffmpeg
+#   - xdg-user-dir (opcional, recomendado)
+#
+# Configuración:
+#   ~/.config/save-my-video/config
+#
+# Ejecutable:
+#   ~/.local/bin/save-my-video
+# ============================================================
+
+# ------------------------------------------------------------
+# Configuración
+# ------------------------------------------------------------
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/save-my-video"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+BAR_WIDTH=32
+
+# ------------------------------------------------------------
+# Colores ANSI
+# ------------------------------------------------------------
+
+RESET='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+
+RED='\033[38;5;203m'
+GREEN='\033[38;5;82m'
+YELLOW='\033[38;5;220m'
+BLUE='\033[38;5;75m'
+CYAN='\033[38;5;51m'
+MAGENTA='\033[38;5;213m'
+WHITE='\033[38;5;255m'
+GRAY='\033[38;5;245m'
+
+# ------------------------------------------------------------
+# Funciones de texto
+# ------------------------------------------------------------
+
+msg() {
+    printf "${CYAN}%s${RESET}\n" "$*"
+}
+
+success() {
+    printf "${GREEN}%s${RESET}\n" "$*"
+}
+
+warning() {
+    printf "${YELLOW}%s${RESET}\n" "$*"
+}
+
+error() {
+    printf "${RED}%s${RESET}\n" "$*" >&2
+}
+
+# ------------------------------------------------------------
+# Dependencias
+# ------------------------------------------------------------
+
+check_dependencies() {
+
+    local missing=0
+
+    if ! command -v yt-dlp >/dev/null 2>&1; then
+        error "ERROR: yt-dlp no está instalado."
+        echo "En Arch Linux:"
+        echo "  sudo pacman -S yt-dlp"
+        echo
+        missing=1
+    fi
+
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        error "ERROR: ffmpeg no está instalado."
+        echo "En Arch Linux:"
+        echo "  sudo pacman -S ffmpeg"
+        echo
+        missing=1
+    fi
+
+    if ! command -v xdg-user-dir >/dev/null 2>&1; then
+        warning "Aviso: xdg-user-dir no está instalado."
+        echo "Puedes instalarlo con:"
+        echo "  sudo pacman -S xdg-user-dirs"
+        echo
+    fi
+
+    if (( missing )); then
+        exit 1
+    fi
+}
+
+# ------------------------------------------------------------
+# Directorios XDG
+# ------------------------------------------------------------
+
+get_xdg_directories() {
+
+    DOWNLOADS_DIR=""
+    VIDEOS_DIR=""
+
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+
+        DOWNLOADS_DIR="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+        VIDEOS_DIR="$(xdg-user-dir VIDEOS 2>/dev/null || true)"
+
+        [[ -d "$DOWNLOADS_DIR" ]] || DOWNLOADS_DIR=""
+        [[ -d "$VIDEOS_DIR" ]] || VIDEOS_DIR=""
+    fi
+}
+
+# ------------------------------------------------------------
+# Normalizar ruta
+# ------------------------------------------------------------
+
+normalize_path() {
+
+    local path="$1"
+
+    if [[ "$path" == "~" ]]; then
+        path="$HOME"
+
+    elif [[ "$path" == "~/"* ]]; then
+        path="$HOME/${path#~/}"
+
+    elif [[ "$path" != /* ]]; then
+        path="$HOME/$path"
+    fi
+
+    printf '%s\n' "$path"
+}
+
+# ------------------------------------------------------------
+# Seleccionar carpeta
+# ------------------------------------------------------------
+
+select_download_directory() {
+
+    get_xdg_directories
+
+    echo
+    echo -e "${BOLD}Carpeta de descarga${RESET}"
+    echo
+
+    local option=1
+    local downloads_option=""
+    local videos_option=""
+
+    if [[ -n "$DOWNLOADS_DIR" ]]; then
+        downloads_option="$option"
+        echo -e "  ${CYAN}${option})${RESET} Descargas"
+        echo -e "     ${DIM}${DOWNLOADS_DIR}${RESET}"
+        ((option++))
+    fi
+
+    if [[ -n "$VIDEOS_DIR" ]]; then
+        videos_option="$option"
+        echo -e "  ${MAGENTA}${option})${RESET} Vídeos"
+        echo -e "     ${DIM}${VIDEOS_DIR}${RESET}"
+        ((option++))
+    fi
+
+    local custom_option="$option"
+
+    echo -e "  ${YELLOW}${custom_option})${RESET} Personalizada"
+    echo
+
+    while true; do
+
+        read -r -p "Selecciona [1-$custom_option]: " choice
+
+        if [[ -n "$downloads_option" &&
+              "$choice" == "$downloads_option" ]]; then
+
+            DOWNLOAD_DIR="$DOWNLOADS_DIR"
+            break
+
+        elif [[ -n "$videos_option" &&
+                "$choice" == "$videos_option" ]]; then
+
+            DOWNLOAD_DIR="$VIDEOS_DIR"
+            break
+
+        elif [[ "$choice" == "$custom_option" ]]; then
+
+            echo
+            read -r -p "Ruta personalizada: " custom_path
+
+            if [[ -z "$custom_path" ]]; then
+                warning "La ruta no puede estar vacía."
+                continue
+            fi
+
+            DOWNLOAD_DIR="$(normalize_path "$custom_path")"
+            break
+
+        else
+
+            warning "Opción no válida."
+
+        fi
+
+    done
+
+    if [[ ! -d "$DOWNLOAD_DIR" ]]; then
+
+        echo
+        echo "La carpeta no existe:"
+        echo "  $DOWNLOAD_DIR"
+        echo
+
+        read -r -p "¿Crear la carpeta? [S/n]: " answer
+
+        case "${answer,,}" in
+
+            ""|s|si|sí)
+
+                if ! mkdir -p "$DOWNLOAD_DIR"; then
+                    error "No se pudo crear la carpeta."
+                    exit 1
+                fi
+
+                ;;
+
+            *)
+
+                error "No se creó la carpeta."
+                exit 1
+                ;;
+
+        esac
+    fi
+}
+
+# ------------------------------------------------------------
+# Configuración inicial
+# ------------------------------------------------------------
+
+create_default_config() {
+
+    mkdir -p "$CONFIG_DIR"
+
+    echo
+    echo -e "${BOLD}${CYAN}╔════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}${CYAN}║          Save My Video Setup          ║${RESET}"
+    echo -e "${BOLD}${CYAN}╚════════════════════════════════════════╝${RESET}"
+    echo
+
+    # --------------------------------------------------------
+    # Vídeo
+    # --------------------------------------------------------
+
+    echo -e "${BOLD}Calidad de vídeo predeterminada${RESET}"
+    echo
+    echo "  1) 2160p (4K)"
+    echo "  2) 1440p"
+    echo "  3) 1080p"
+    echo "  4) 720p"
+    echo
+
+    while true; do
+
+        read -r -p "Selecciona [1-4]: " choice
+
+        case "$choice" in
+
+            1)
+                DEFAULT_VIDEO_HEIGHT=2160
+                break
+                ;;
+
+            2)
+                DEFAULT_VIDEO_HEIGHT=1440
+                break
+                ;;
+
+            3)
+                DEFAULT_VIDEO_HEIGHT=1080
+                break
+                ;;
+
+            4)
+                DEFAULT_VIDEO_HEIGHT=720
+                break
+                ;;
+
+            *)
+                warning "Opción no válida."
+                ;;
+
+        esac
+
+    done
+
+    # --------------------------------------------------------
+    # Audio
+    # --------------------------------------------------------
+
+    echo
+    echo -e "${BOLD}Calidad de audio predeterminada${RESET}"
+    echo
+    echo "  1) Mejor disponible"
+    echo "  2) Hasta 320 kbps"
+    echo "  3) Hasta 256 kbps"
+    echo "  4) Hasta 192 kbps"
+    echo
+
+    while true; do
+
+        read -r -p "Selecciona [1-4]: " choice
+
+        case "$choice" in
+
+            1)
+                DEFAULT_AUDIO="best"
+                break
+                ;;
+
+            2)
+                DEFAULT_AUDIO="320"
+                break
+                ;;
+
+            3)
+                DEFAULT_AUDIO="256"
+                break
+                ;;
+
+            4)
+                DEFAULT_AUDIO="192"
+                break
+                ;;
+
+            *)
+                warning "Opción no válida."
+                ;;
+
+        esac
+
+    done
+
+    # --------------------------------------------------------
+    # Carpeta
+    # --------------------------------------------------------
+
+    select_download_directory
+
+    # --------------------------------------------------------
+    # Guardar
+    # --------------------------------------------------------
+
+    cat > "$CONFIG_FILE" <<EOF
+DEFAULT_VIDEO_HEIGHT=$DEFAULT_VIDEO_HEIGHT
+DEFAULT_AUDIO="$DEFAULT_AUDIO"
+DOWNLOAD_DIR="$DOWNLOAD_DIR"
+EOF
+
+    chmod 600 "$CONFIG_FILE"
+
+    echo
+    success "Configuración guardada:"
+    echo "  $CONFIG_FILE"
+    echo
+}
+
+# ------------------------------------------------------------
+# Cargar configuración
+# ------------------------------------------------------------
+
+load_config() {
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+
+        create_default_config
+
+    else
+
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+
+        DEFAULT_VIDEO_HEIGHT="${DEFAULT_VIDEO_HEIGHT:-1080}"
+        DEFAULT_AUDIO="${DEFAULT_AUDIO:-best}"
+
+        if [[ -z "${DOWNLOAD_DIR:-}" ]]; then
+
+            echo
+            warning "No hay carpeta de descarga configurada."
+
+            select_download_directory
+
+            cat > "$CONFIG_FILE" <<EOF
+DEFAULT_VIDEO_HEIGHT=$DEFAULT_VIDEO_HEIGHT
+DEFAULT_AUDIO="$DEFAULT_AUDIO"
+DOWNLOAD_DIR="$DOWNLOAD_DIR"
+EOF
+
+            chmod 600 "$CONFIG_FILE"
+        fi
+    fi
+
+    mkdir -p "$DOWNLOAD_DIR"
+}
+
+# ------------------------------------------------------------
+# URL
+# ------------------------------------------------------------
+
+ask_url() {
+
+    echo
+    echo -e "${BOLD}${CYAN}╔════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}${CYAN}║          Save My Video                ║${RESET}"
+    echo -e "${BOLD}${CYAN}╚════════════════════════════════════════╝${RESET}"
+    echo
+
+    while true; do
+
+        read -r -p "Link de descarga: " URL
+
+        if [[ -z "$URL" ]]; then
+            error "El enlace no puede estar vacío."
+            continue
+        fi
+
+        if [[ ! "$URL" =~ ^https?:// ]]; then
+            warning "Debe comenzar con http:// o https://"
+            continue
+        fi
+
+        break
+    done
+}
+
+# ------------------------------------------------------------
+# Información del vídeo
+# ------------------------------------------------------------
+
+get_video_info() {
+
+    local title_file
+    local error_file
+
+    title_file="$(mktemp)"
+    error_file="$(mktemp)"
+
+    msg "Verificando enlace..."
+    echo
+
+    if ! yt-dlp \
+        --no-warnings \
+        --skip-download \
+        --print "%(title)s" \
+        "$URL" > "$title_file" 2> "$error_file"; then
+
+        error "No se pudo verificar el enlace."
+        echo
+
+        cat "$error_file"
+
+        rm -f "$title_file" "$error_file"
+
+        return 1
+    fi
+
+    VIDEO_TITLE="$(head -n 1 "$title_file")"
+
+    rm -f "$title_file" "$error_file"
+
+    success "Vídeo encontrado:"
+    echo "  $VIDEO_TITLE"
+
+    return 0
+}
+
+# ------------------------------------------------------------
+# Detectar 4K
+# ------------------------------------------------------------
+
+detect_4k() {
+
+    msg "Comprobando disponibilidad de 4K..."
+
+    FORMATS="$(
+        yt-dlp \
+            --no-warnings \
+            --skip-download \
+            --list-formats \
+            "$URL" 2>/dev/null || true
+    )"
+
+    if echo "$FORMATS" | grep -Eq '(^|[[:space:]])2160([pP]|[[:space:]])|2160p'; then
+
+        HAS_4K=1
+
+        success "✓ 4K (2160p) disponible."
+
+    else
+
+        HAS_4K=0
+
+        warning "4K no disponible."
+
+    fi
+}
+
+# ------------------------------------------------------------
+# Calidad
+# ------------------------------------------------------------
+
+select_quality() {
+
+    VIDEO_HEIGHT="$DEFAULT_VIDEO_HEIGHT"
+
+    case "$DEFAULT_AUDIO" in
+
+        best)
+            AUDIO_SELECTOR="bestaudio"
+            ;;
+
+        320)
+            AUDIO_SELECTOR="bestaudio[abr<=320]/bestaudio"
+            ;;
+
+        256)
+            AUDIO_SELECTOR="bestaudio[abr<=256]/bestaudio"
+            ;;
+
+        192)
+            AUDIO_SELECTOR="bestaudio[abr<=192]/bestaudio"
+            ;;
+
+        *)
+            AUDIO_SELECTOR="bestaudio"
+            ;;
+
+    esac
+
+    if (( HAS_4K )); then
+
+        echo
+        echo -e "${BOLD}${GREEN}4K disponible${RESET}"
+        echo
+        echo "¿Deseas descargar el vídeo en 4K?"
+        echo
+        echo -e "  ${GREEN}S${RESET}) Sí, 4K"
+        echo -e "  ${YELLOW}N${RESET}) No, 1080p"
+        echo
+
+        while true; do
+
+            read -r -p "Selecciona [S/n]: " answer
+
+            case "${answer,,}" in
+
+                ""|s|si|sí)
+                    VIDEO_HEIGHT=2160
+                    break
+                    ;;
+
+                n|no)
+                    VIDEO_HEIGHT=1080
+                    break
+                    ;;
+
+                *)
+                    warning "Responde S o N."
+                    ;;
+
+            esac
+
+        done
+
+    elif (( VIDEO_HEIGHT > 1080 )); then
+
+        VIDEO_HEIGHT=1080
+    fi
+}
+
+# ------------------------------------------------------------
+# Barra de progreso
+# ------------------------------------------------------------
+
+percent_from_bytes() {
+
+    local downloaded="${1:-0}"
+    local total="${2:-0}"
+
+    if [[ "$total" =~ ^[0-9]+$ ]] &&
+       [[ "$downloaded" =~ ^[0-9]+$ ]] &&
+       (( total > 0 )); then
+
+        awk -v d="$downloaded" -v t="$total" \
+            'BEGIN { printf "%.1f", (d/t)*100 }'
+
+    else
+
+        printf "0.0"
+
+    fi
+}
+
+clamp_percent() {
+
+    local p="$1"
+
+    awk -v p="$p" '
+        BEGIN {
+            if (p < 0) p = 0
+            if (p > 100) p = 100
+            printf "%.1f", p
+        }
+    '
+}
+
+draw_bar() {
+
+    local label="$1"
+    local percent="$2"
+    local color="$3"
+    local icon="$4"
+
+    local filled
+    local empty
+    local i
+
+    filled="$(
+        awk -v p="$percent" -v w="$BAR_WIDTH" \
+            'BEGIN {
+                n = int((p / 100) * w + 0.5)
+                if (n < 0) n = 0
+                if (n > w) n = w
+                printf "%d", n
+            }'
+    )"
+
+    empty=$((BAR_WIDTH - filled))
+
+    printf "  ${WHITE}%-7s${RESET} " "$icon $label"
+
+    printf "${color}"
+
+    for ((i=0; i<filled; i++)); do
+        printf "█"
+    done
+
+    printf "${GRAY}"
+
+    for ((i=0; i<empty; i++)); do
+        printf "░"
+    done
+
+    printf "${RESET} ${BOLD}%5.1f%%${RESET}" "$percent"
+}
+
+render_ui() {
+
+    local video_percent="$1"
+    local audio_percent="$2"
+    local total_percent="$3"
+    local speed="$4"
+    local eta="$5"
+    local frame="$6"
+
+    local video_color="$CYAN"
+    local audio_color="$MAGENTA"
+    local total_color="$GREEN"
+
+    if (( frame % 3 == 1 )); then
+        video_color="$BLUE"
+    elif (( frame % 3 == 2 )); then
+        video_color="$CYAN"
+    fi
+
+    if (( frame % 2 == 1 )); then
+        audio_color="$MAGENTA"
+    else
+        audio_color="$YELLOW"
+    fi
+
+    printf '\033[8A'
+
+    printf '\033[2K\r'
+    echo -e "  ${BOLD}${WHITE}Descargando${RESET}: ${DIM}${VIDEO_TITLE}${RESET}"
+
+    printf '\033[2K\r'
+    echo -e "  ${DIM}────────────────────────────────────────────────────────${RESET}"
+
+    printf '\033[2K\r'
+    draw_bar "Vídeo" "$video_percent" "$video_color" "🎬"
+    printf "\n"
+
+    printf '\033[2K\r'
+    draw_bar "Audio" "$audio_percent" "$audio_color" "🎵"
+    printf "\n"
+
+    printf '\033[2K\r'
+    draw_bar "Total" "$total_percent" "$total_color" "⚡"
+    printf "\n"
+
+    printf '\033[2K\r'
+    printf "  ${DIM}Velocidad:${RESET} ${WHITE}%s${RESET}" "$speed"
+    printf "    ${DIM}ETA:${RESET} ${WHITE}%s${RESET}" "$eta"
+    printf "\n"
+
+    printf '\033[2K\r'
+    echo -e "  ${DIM}Destino: ${DOWNLOAD_DIR}${RESET}"
+
+    printf '\033[2K\r'
+    echo -e "  ${DIM}────────────────────────────────────────────────────────${RESET}"
+}
+
+# ------------------------------------------------------------
+# Descargar
+# ------------------------------------------------------------
+
+download_video() {
+
+    local format
+    local progress_fifo
+    local error_file
+    local yt_pid
+    local yt_status
+
+    local video_done=0
+    local video_total=0
+
+    local audio_done=0
+    local audio_total=0
+
+    local video_percent="0.0"
+    local audio_percent="0.0"
+    local total_percent="0.0"
+
+    local speed="--"
+    local eta="--"
+    local frame=0
+
+    format="bestvideo[height<=${VIDEO_HEIGHT}]+${AUDIO_SELECTOR}/best[height<=${VIDEO_HEIGHT}]"
+
+    mkdir -p "$DOWNLOAD_DIR"
+
+    progress_fifo="$(mktemp -u)"
+    error_file="$(mktemp)"
+
+    mkfifo "$progress_fifo"
+
+    echo
+    echo -e "${BOLD}${WHITE}Preparando descarga...${RESET}"
+    echo
+
+    for ((i=0; i<8; i++)); do
+        echo
+    done
+
+    yt-dlp \
+        --format "$format" \
+        --merge-output-format mp4 \
+        --output "$DOWNLOAD_DIR/%(title)s.%(ext)s" \
+        --newline \
+        --quiet \
+        --no-warnings \
+        --progress \
+        --progress-delta 0.15 \
+        --progress-template=$'download:YT_PROGRESS\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress.speed)s\t%(progress.eta)s' \
+        "$URL" > "$progress_fifo" 2> "$error_file" &
+
+    yt_pid=$!
+
+    while IFS=$'\t' read -r marker vcodec acodec downloaded total estimated current_speed current_eta; do
+
+        [[ "$marker" == "YT_PROGRESS" ]] || continue
+
+        [[ "$downloaded" =~ ^[0-9]+$ ]] || downloaded=0
+
+        if [[ "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+            current_total="$total"
+        elif [[ "$estimated" =~ ^[0-9]+$ ]] && (( estimated > 0 )); then
+            current_total="$estimated"
+        else
+            current_total=0
+        fi
+
+        if [[ "$vcodec" != "none" &&
+              "$acodec" == "none" ]]; then
+
+            video_done="$downloaded"
+            video_total="$current_total"
+
+        elif [[ "$vcodec" == "none" &&
+                "$acodec" != "none" ]]; then
+
+            audio_done="$downloaded"
+            audio_total="$current_total"
+
+        else
+
+            video_done="$downloaded"
+            video_total="$current_total"
+
+            audio_done="$downloaded"
+            audio_total="$current_total"
+
+        fi
+
+        if (( video_total > 0 )); then
+            video_percent="$(percent_from_bytes "$video_done" "$video_total")"
+        fi
+
+        if (( audio_total > 0 )); then
+            audio_percent="$(percent_from_bytes "$audio_done" "$audio_total")"
+        fi
+
+        video_percent="$(clamp_percent "$video_percent")"
+        audio_percent="$(clamp_percent "$audio_percent")"
+
+        if (( video_total > 0 && audio_total > 0 )); then
+
+            total_percent="$(
+                awk \
+                    -v vd="$video_done" \
+                    -v vt="$video_total" \
+                    -v ad="$audio_done" \
+                    -v at="$audio_total" \
+                    'BEGIN {
+                        printf "%.1f",
+                        ((vd + ad) / (vt + at)) * 100
+                    }'
+            )"
+
+        elif (( video_total > 0 )); then
+
+            total_percent="$video_percent"
+
+        elif (( audio_total > 0 )); then
+
+            total_percent="$audio_percent"
+
+        else
+
+            total_percent="0.0"
+
+        fi
+
+        total_percent="$(clamp_percent "$total_percent")"
+
+        [[ -n "$current_speed" ]] || current_speed="--"
+        [[ -n "$current_eta" ]] || current_eta="--"
+
+        speed="$current_speed"
+        eta="$current_eta"
+
+        ((frame++))
+
+        render_ui \
+            "$video_percent" \
+            "$audio_percent" \
+            "$total_percent" \
+            "$speed" \
+            "$eta" \
+            "$frame"
+
+    done < "$progress_fifo"
+
+    wait "$yt_pid"
+    yt_status=$?
+
+    rm -f "$progress_fifo"
+
+    printf '\n'
+
+    if (( yt_status == 0 )); then
+
+        render_ui \
+            "100.0" \
+            "100.0" \
+            "100.0" \
+            "completado" \
+            "00:00" \
+            "$frame"
+
+        echo
+        success "✓ Descarga completada."
+        echo
+        echo "Guardado en:"
+        echo "  $DOWNLOAD_DIR"
+        echo
+
+        rm -f "$error_file"
+
+        return 0
+
+    fi
+
+    echo
+
+    error "La descarga ha fallado."
+
+    if [[ -s "$error_file" ]]; then
+        echo
+        cat "$error_file"
+    fi
+
+    rm -f "$error_file"
+
+    return "$yt_status"
+}
+
+# ------------------------------------------------------------
+# Reintentos
+# ------------------------------------------------------------
+
+download_loop() {
+
+    while true; do
+
+        if download_video; then
+            return 0
+        fi
+
+        echo
+        echo -e "${BOLD}¿Qué deseas hacer?${RESET}"
+        echo
+        echo "  1) Reintentar descarga"
+        echo "  2) Salir"
+        echo
+
+        while true; do
+
+            read -r -p "Selecciona [1-2]: " retry
+
+            case "$retry" in
+
+                1)
+                    echo
+                    msg "Reintentando descarga..."
+                    echo
+                    break
+                    ;;
+
+                2)
+                    warning "Saliendo."
+                    return 1
+                    ;;
+
+                *)
+                    warning "Opción no válida."
+                    ;;
+
+            esac
+
+        done
+    done
+}
+
+# ------------------------------------------------------------
+# Programa principal
+# ------------------------------------------------------------
+
+main() {
+
+    check_dependencies
+
+    load_config
+
+    while true; do
+
+        ask_url
+
+        if ! get_video_info; then
+
+            echo
+            echo "¿Deseas introducir otro enlace?"
+            echo
+            echo "  1) Sí"
+            echo "  2) Salir"
+            echo
+
+            read -r -p "Selecciona [1-2]: " choice
+
+            if [[ "$choice" != "1" ]]; then
+                exit 1
+            fi
+
+            continue
+        fi
+
+        detect_4k
+
+        select_quality
+
+        echo
+        echo -e "${BOLD}Configuración de descarga${RESET}"
+        echo "----------------------------------------"
+        echo "Vídeo  : ${VIDEO_HEIGHT}p"
+        echo "Audio  : ${DEFAULT_AUDIO}"
+        echo "Destino: ${DOWNLOAD_DIR}"
+        echo "----------------------------------------"
+        echo
+
+        if download_loop; then
+
+            read -r -p "¿Descargar otro vídeo? [S/n]: " another
+
+            case "${another,,}" in
+
+                ""|s|si|sí)
+                    clear
+                    continue
+                    ;;
+
+                *)
+                    success "Hasta luego."
+                    exit 0
+                    ;;
+
+            esac
+
+        else
+
+            exit 1
+
+        fi
+
+    done
+}
+
+main "$@"
+
